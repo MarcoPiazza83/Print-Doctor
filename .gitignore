@@ -1,0 +1,12 @@
+# appunti e file di lavoro locali
+backup/
+tappa0/
+NOTE_PROGETTO.md
+PROMPT_SKILL.md
+skills/_fonti.md
+
+# Python e sistema
+__pycache__/
+*.pyc
+*.tmp
+.DS_Store
