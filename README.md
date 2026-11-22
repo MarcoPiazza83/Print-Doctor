@@ -22,7 +22,7 @@ Print Doctor is a plugin for OrcaSlicer 2.5.1 or newer. It adds a chat panel: yo
 
 Requirements: OrcaSlicer 2.5.1 or newer. Nothing else to install.
 
-1. Download [`print_doctor.py`](print_doctor.py) (on the file page, use the download button).
+1. Download `print_doctor.py` from the [Releases page](https://github.com/MarcoPiazza83/Print-Doctor/releases) (under **Assets** of the newest release).
 2. In OrcaSlicer: **File → Plugins → Install local plugin**, pick the file, activate it and accept the permissions (network and threads).
 3. Select **Print Doctor** in the Plugins window and press **Run**: the panel opens on the right.
 4. Open the settings (gear icon) and connect an AI service.
