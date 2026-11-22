@@ -6,7 +6,7 @@ Print Doctor is a plugin for OrcaSlicer 2.5.1 or newer. It adds a chat panel: yo
 
 > **Status: beta.** The code is covered by automated tests that run outside OrcaSlicer. Testing inside OrcaSlicer is still in progress, so expect rough edges.
 
-*In italiano: Print Doctor è un plugin per OrcaSlicer con una chat. Descrivi il difetto di stampa o allega una foto o il G-code; l'IA legge i parametri di Orca e il modello sul piatto e propone le modifiche, che applichi con un clic e puoi annullare. L'interfaccia è in 23 lingue, italiano compreso, e segue la lingua scelta in OrcaSlicer.*
+*In italiano: Print Doctor è un plugin per OrcaSlicer con una chat. Descrivi il difetto di stampa o allega una foto o il G-code; l'IA legge i parametri di Orca e il modello sul piatto e propone le modifiche, che applichi con un clic e puoi annullare. Funziona con il tuo abbonamento ChatGPT o Claude (tramite Claude Code), con una chiave API (Gemini ne ha una gratuita) o con modelli locali. L'interfaccia è in 23 lingue, italiano compreso, e segue la lingua scelta in OrcaSlicer.*
 
 ## What it can do
 
@@ -34,6 +34,7 @@ To update, install the new `print_doctor.py` the same way. Settings and keys liv
 | Service | How you connect |
 |---|---|
 | ChatGPT | "Continue with ChatGPT": uses your own ChatGPT plan through OpenAI's official sign-in for open-source apps (preview) |
+| Claude | Your own Claude plan (Pro, Max…) through Claude Code installed on your computer: see [Claude with your Claude plan](#claude-with-your-claude-plan) |
 | OpenRouter | Browser sign-in, or an API key |
 | Anthropic, OpenAI, Google Gemini | Your own API key |
 | Ollama, LM Studio | Local models, no key |
@@ -41,9 +42,32 @@ To update, install the new `print_doctor.py` the same way. Settings and keys liv
 
 Requests go straight from your computer to the service you choose. Keys and tokens are stored only on your computer, in the plugin's settings file.
 
+No ChatGPT or Claude plan? A Google Gemini key is free: create it in a minute at [Google AI Studio](https://aistudio.google.com/apikey), no credit card needed (daily limits apply).
+
+## Claude with your Claude plan
+
+Print Doctor can use your Claude subscription through **Claude Code**, Anthropic's own program, installed on your computer and signed in with your account. Print Doctor never sees your sign-in.
+
+**Turn it on (once):**
+
+1. Install Claude Code: follow [Anthropic's setup page](https://code.claude.com/docs/en/setup) (the native installer is the simplest).
+2. Open a terminal (on Windows: PowerShell), type `claude`, press Enter and sign in with your Claude account when asked. Then close the terminal.
+3. In Print Doctor's settings choose **Claude**. The panel shows *Claude Code found* and the program's path.
+   - Not found? Find the path in a terminal with `which claude` (macOS, Linux) or `where.exe claude` (Windows; if it lists several, copy the one ending in `.exe`), and paste it into **Claude Code program**.
+4. Optional: choose a model (`opus`, `sonnet`, `haiku`). Leave it empty to use Claude Code's default.
+5. Send a message. The first time, OrcaSlicer asks whether Print Doctor may start a program (the `claude` command): answer **Yes**. It does not ask again.
+
+**How it works:** Print Doctor starts your own, unmodified Claude Code and gives it Print Doctor's tools through a connection that never leaves your computer (127.0.0.1, protected by a random key). Claude Code runs with all its own tools turned off, so it can only read your Orca settings and propose changes through Print Doctor, with the same safety rules as every other service. Print Doctor never reads, stores or sends your Claude credentials.
+
+**Good to know:**
+- Usage counts toward your Claude plan's limits, like using Claude Code yourself. Anthropic's terms apply.
+- If the environment variable `ANTHROPIC_API_KEY` is set on your computer, Claude Code uses that key instead of your plan, and the API bills it.
+- Error *Claude Code is not signed in*: repeat step 2.
+- If Anthropic changes how Claude Code works with subscriptions, this option may stop working. The Anthropic option with an API key, and the other services, keep working.
+
 ## Privacy
 
-There is no Print Doctor server. What the AI service receives is what it needs to answer: your messages, the photos and sliced files you attach, the settings it reads, measurements of the objects on the plate and, when it asks for one, a picture of the plugin's 3D window. That service's own privacy terms apply. With Ollama or LM Studio everything stays on your computer.
+There is no Print Doctor server. What the AI service receives is what it needs to answer: your messages, the photos and sliced files you attach, the settings it reads, measurements of the objects on the plate and, when it asks for one, a picture of the plugin's 3D window. That service's own privacy terms apply. With Claude, requests go from Claude Code on your computer to Anthropic. With Ollama or LM Studio everything stays on your computer.
 
 ## Safety rules
 

@@ -4,7 +4,7 @@
 #
 # [tool.orcaslicer.plugin]
 # name = "Print Doctor"
-# description = "Chatta con un'IA che capisce i problemi di stampa e modifica i parametri di Orca (supporti, larghezze di linea, velocita, ritrazione, temperature). Funziona con il tuo abbonamento ChatGPT, OpenRouter, Anthropic, OpenAI, Gemini, Ollama e LM Studio. Gratuito: se ti e utile, offrimi un caffe su buymeacoffee.com/Marco.Piazza"
+# description = "Chat with an AI that understands print problems and changes Orca settings (supports, line widths, speeds, retraction, temperatures). Works with your ChatGPT plan, your Claude plan (through Claude Code), OpenRouter, Anthropic, OpenAI, Gemini, Ollama and LM Studio. Panel in 23 languages. Free: if it helps you, buy me a coffee at buymeacoffee.com/Marco.Piazza"
 # author = "Marco Piazza"
 # version = "0.5.0"
 # ///
@@ -39,6 +39,7 @@ import queue
 import re
 import secrets
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -48,6 +49,15 @@ import urllib.parse
 import urllib.request
 import uuid
 import webbrowser
+
+try:                                    # blocco dei file: fcntl su macOS/Linux, msvcrt su Windows
+    import fcntl
+except ImportError:
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None
 
 import orca
 
@@ -72,6 +82,7 @@ ANTHROPIC_BETA = "server-side-fallback-2026-07-01"
 PROVIDERS = {
     "chatgpt": {"label": "ChatGPT", "kind": "responses", "base": "https://api.openai.com/v1", "model": "",
                 "key": False, "login": True},
+    "claudecode": {"label": "Claude", "kind": "claudecode", "base": "", "model": "", "key": False},
     "openrouter": {"label": "OpenRouter", "kind": "openai", "base": "https://openrouter.ai/api/v1",
                    "model": "anthropic/claude-opus-5.5", "key": True},
     "anthropic": {"label": "Anthropic", "kind": "anthropic", "base": "https://api.anthropic.com/v1",
@@ -90,6 +101,7 @@ KEY_PAGES = {
     "anthropic": "https://console.anthropic.com/settings/keys",
     "openai": "https://platform.openai.com/api-keys",
     "gemini": "https://aistudio.google.com/apikey",
+    "claudecode": "https://code.claude.com/docs/en/setup",          # qui non c'e una chiave: come installare Claude Code
 }
 
 # Sign in with ChatGPT per app open source: usa il piano ChatGPT dell'utente.
@@ -4196,6 +4208,430 @@ class AnthropicChat:
         self.history.append({"role": "user", "content": blocks})
 
 
+# ---- Claude con l'abbonamento: il Claude Code installato dall'utente ----
+# Il plugin avvia il programma Claude Code dell'utente, non modificato e gia collegato dall'utente al suo account
+# (nel terminale, con il login di Anthropic). Il plugin non legge, non salva e non tocca mai credenziali o token.
+# Gli strumenti del plugin arrivano a Claude Code da un piccolo server MCP locale (solo 127.0.0.1, con un segreto).
+# OrcaSlicer concede il permesso di avviare un programma solo per un comando identico, carattere per carattere:
+# per questo il comando e sempre lo stesso e tutto il resto (porta, modello, istruzioni) passa da file fissi.
+CC_SETUP_URL = "https://code.claude.com/docs/en/setup"
+CC_SERVER = "printdoctor"                      # nome del server MCP: gli strumenti diventano mcp__printdoctor__<nome>
+CC_FILES = {"server": "cc_server.json", "options": "cc_opzioni.json", "prompt": "cc_istruzioni.md"}   # niente "conf"/"secret"
+CC_MODELS = ["opus", "sonnet", "haiku"]
+CC_TOOL_WAIT = 900                              # secondi: un'attesa piu lunga vuol dire che il turno e stato abbandonato
+CC_READ_ONLY = {"get_settings", "search_settings", "get_plate", "read_skill", "measure_section", "analyze_model",
+                "mesh_check", "preset_changes", "plate_check", "calibration_calc", "change_history"}
+
+
+def find_claude(custom=""):
+    """Percorso del programma claude: quello scritto dall'utente, oppure i posti dove lo mettono gli installatori
+    ufficiali (le app grafiche del Mac non vedono il PATH del terminale). Vuoto se non c'e."""
+    names = ["claude.exe", "claude.cmd", "claude"] if os.name == "nt" else ["claude"]
+    custom = str(custom or "").strip().strip('"')
+    if custom:
+        p = os.path.expanduser(custom)
+        cands = [os.path.join(p, n) for n in names] if os.path.isdir(p) else [p]
+    else:
+        home = os.path.expanduser("~")
+        dirs = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d]
+        dirs += [os.path.join(home, ".local", "bin"), os.path.join(home, ".claude", "local"),
+                 "/opt/homebrew/bin", "/usr/local/bin", os.path.join(home, ".npm-global", "bin"),
+                 os.path.join(home, ".bun", "bin")]
+        for var in ("APPDATA", "LOCALAPPDATA"):
+            if os.environ.get(var):
+                dirs.append(os.path.join(os.environ[var], "npm"))
+        cands = [os.path.join(d, n) for d in dirs for n in names]
+    for f in cands:
+        if os.path.isfile(f) and (os.name == "nt" or os.access(f, os.X_OK)):
+            return f
+    return ""
+
+
+def cc_args(exe, folder):
+    """Il comando, sempre identico per lo stesso programma e la stessa cartella (vedi sopra)."""
+    j = lambda k: os.path.join(folder, CC_FILES[k])
+    return [exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "--tools", "", "--strict-mcp-config", "--mcp-config", j("server"), "--settings", j("options"),
+            "--setting-sources", "", "--system-prompt-file", j("prompt"), "--allowedTools", "mcp__" + CC_SERVER,
+            "--permission-mode", "dontAsk", "--disable-slash-commands", "--no-session-persistence"]
+
+
+def cc_env(exe):
+    """L'ambiente dell'utente cosi com'e; al PATH si aggiungono la cartella del programma e quelle di Node
+    (un claude installato con npm e uno script che ha bisogno di node)."""
+    env = dict(os.environ)
+    extra = [os.path.dirname(exe), "/opt/homebrew/bin", "/usr/local/bin"] if os.name != "nt" else [os.path.dirname(exe)]
+    env["PATH"] = os.pathsep.join(extra + [env.get("PATH", "")])
+    env.pop("CLAUDECODE", None)                 # se Orca e stato aperto da un terminale con Claude Code
+    return env
+
+
+def cc_error_code(text, kind=""):
+    low = str(text or "").lower()
+    if kind == "authentication_failed" or "not logged in" in low or "/login" in low or "invalid api key" in low:
+        return "cc_login"
+    if kind == "rate_limit" or ("limit" in low and ("usage" in low or "reached" in low or "hit your" in low)):
+        return "cc_limit"
+    return ("Claude Code: " + str(text).strip()[:300]) if str(text or "").strip() else "cc_exited"
+
+
+def cc_lock_slot(base):
+    """Cartella di avvio tutta per questa conversazione, bloccata finche la conversazione e aperta: due OrcaSlicer
+    aperti insieme non si sovrascrivono porta e segreto. La prima cartella e sempre la stessa, cosi il comando (e il
+    permesso dato da OrcaSlicer) resta identico; una seconda serve solo con due conversazioni aperte insieme.
+    Cartella e file solo per l'utente (0700 / 0600). Ritorna (cartella, file di blocco) oppure (None, None)."""
+    for i in range(1, 6):
+        d = base if i == 1 else "%s_%d" % (base, i)
+        try:
+            os.makedirs(d, mode=0o700, exist_ok=True)
+            if os.name != "nt":
+                os.chmod(d, 0o700)
+            fh = open(os.path.join(d, "cc.lock"), "a+")
+        except OSError:
+            continue
+        try:
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            elif msvcrt is not None:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            return d, fh
+        except OSError:
+            fh.close()
+    return None, None
+
+
+def cc_unlock_slot(fh):
+    if fh is None:
+        return
+    try:
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        elif msvcrt is not None:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    except OSError:
+        pass
+    try:
+        fh.close()
+    except OSError:
+        pass
+
+
+def cc_write_private(path, text):
+    """Scrive un file leggibile solo dall'utente (contiene il segreto del server locale)."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    if os.name != "nt":
+        os.chmod(path, 0o600)                   # anche un file gia esistente, creato con altri permessi
+
+
+class ClaudeCodeChat:
+    """Claude tramite il Claude Code dell'utente (vedi sopra). Stessa interfaccia delle altre chat: chat_job esegue gli
+    strumenti come per tutti i servizi, con gli stessi controlli di sicurezza. Un processo per conversazione: va creato
+    sul thread UI (OrcaSlicer chiede li il permesso di avviare un programma), poi lo usa il thread di lavoro."""
+    max_steps = 40                              # qui ogni chiamata a uno strumento e un passo
+
+    def __init__(self, exe, model, base, system, tools):
+        self.history = []
+        self.q = queue.Queue()                  # ("ev", evento di Claude Code) | ("call", (id, nome, argomenti)) | ("eof", None)
+        self.pending = {}                       # id -> {"ev": Event, "res": (testo, errore)}
+        self.plock = threading.Lock()
+        self.turn_open = False
+        self.dead = False                       # processo finito o conversazione chiusa (cambia sotto plock)
+        self.abandoned = False                  # turno finito per il plugin: altre chiamate vengono rifiutate subito
+        self.folder, self.slot = None, None
+        self.err_tail = collections.deque(maxlen=30)
+        self.secret = secrets.token_urlsafe(24)
+        self.tools = tools
+        self.srv = None
+        self.proc = None
+        try:
+            folder, self.slot = cc_lock_slot(base)
+            if folder is None:
+                raise OSError("no free Claude Code folder in %s" % base)
+            self.folder = folder
+            self.srv = self._server()
+            port = self.srv.server_address[1]
+            files = {
+                "server": json.dumps({"mcpServers": {CC_SERVER: {
+                    "type": "http", "url": "http://127.0.0.1:%d/mcp" % port,
+                    "headers": {"Authorization": "Bearer " + self.secret}}}}),
+                "options": json.dumps({"model": model} if model else {}),
+                "prompt": system + "\n\n# Tools\nYour tools are the Print Doctor tools, named mcp__%s__<name>; "
+                                   "the tool names in these instructions refer to them.\n" % CC_SERVER,
+            }
+            for k, text in files.items():
+                cc_write_private(os.path.join(folder, CC_FILES[k]), text)
+            kw = {"creationflags": 0x08000000} if os.name == "nt" else {}      # CREATE_NO_WINDOW
+            self.proc = subprocess.Popen(cc_args(exe, folder), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, cwd=folder, env=cc_env(exe), text=True,
+                                         encoding="utf-8", errors="replace", bufsize=1, **kw)
+        except BaseException:
+            self.close()
+            raise
+        threading.Thread(target=self._read_out, name="print-doctor-cc", daemon=True).start()
+        threading.Thread(target=self._read_err, name="print-doctor-cc-err", daemon=True).start()
+
+    # ---- server MCP (thread del server: uno per richiesta) ----
+    def _server(self):
+        chat = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def reply(self, code, body=None):
+                raw = json.dumps(body).encode("utf-8") if body is not None else b""
+                self.send_response(code)
+                if body is not None:
+                    self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                if raw:
+                    self.wfile.write(raw)
+
+            def do_GET(self):
+                self.reply(405)
+
+            def do_DELETE(self):
+                self.reply(405)
+
+            def do_POST(self):
+                auth = self.headers.get("Authorization") or ""
+                if not hmac.compare_digest(auth.encode("utf-8"), ("Bearer " + chat.secret).encode("utf-8")):
+                    return self.reply(401)
+                try:
+                    msg = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                except ValueError:
+                    return self.reply(400)
+                if isinstance(msg, list):
+                    out = [r for r in (chat.rpc(m) for m in msg if isinstance(m, dict)) if r is not None]
+                    return self.reply(200, out) if out else self.reply(202)
+                out = chat.rpc(msg) if isinstance(msg, dict) else None
+                return self.reply(200, out) if out is not None else self.reply(202)
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, name="print-doctor-mcp", daemon=True).start()
+        return srv
+
+    def rpc(self, msg):
+        if "id" not in msg:
+            return None                         # notifica: niente risposta
+        mid, method, params = msg["id"], msg.get("method"), msg.get("params") or {}
+        if method == "initialize":
+            res = {"protocolVersion": params.get("protocolVersion") or "2025-06-18", "capabilities": {"tools": {}},
+                   "serverInfo": {"name": CC_SERVER, "title": TITLE, "version": VERSION}}
+        elif method == "ping":
+            res = {}
+        elif method == "tools/list":
+            res = {"tools": [dict({"name": t["name"], "description": t["description"], "inputSchema": t["parameters"]},
+                                  **({"annotations": {"readOnlyHint": True}} if t["name"] in CC_READ_ONLY else {}))
+                             for t in self.tools]}
+        elif method == "tools/call":
+            text, err = self.call(str(params.get("name") or ""), params.get("arguments") or {})
+            res = {"content": [{"type": "text", "text": text}], "isError": bool(err)}
+        else:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "method not found"}}
+        return {"jsonrpc": "2.0", "id": mid, "result": res}
+
+    def call(self, name, args):
+        """Thread del server: passa la chiamata a step() e aspetta che chat_job dia il risultato."""
+        cid = "cc_" + secrets.token_hex(6)
+        slot = {"ev": threading.Event(), "res": None}
+        with self.plock:                        # stesso lock di chi chiude: nessuna chiamata resta senza risposta
+            if self.dead:
+                return json.dumps({"error": "Print Doctor closed this conversation"}), True
+            if self.abandoned:
+                return json.dumps({"error": "not executed: the turn has ended; end your reply now"}), True
+            self.pending[cid] = slot
+        self.q.put(("call", (cid, name, args if isinstance(args, dict) else {})))
+        slot["ev"].wait(CC_TOOL_WAIT)
+        with self.plock:
+            self.pending.pop(cid, None)
+        return slot["res"] or (json.dumps({"error": "not executed: the turn has ended"}), True)
+
+    def answer_pending(self, why, dead=False, abandoned=False):
+        with self.plock:
+            if dead:
+                self.dead = True
+            if abandoned:
+                self.abandoned = True
+            slots = list(self.pending.values())
+            self.pending.clear()
+        for s in slots:
+            s["res"] = (json.dumps({"error": why}), True)
+            s["ev"].set()
+
+    # ---- uscita di Claude Code ----
+    def _read_out(self):
+        try:
+            for line in self.proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    self.err_tail.append(line[:300])
+                    continue
+                if isinstance(ev, dict):
+                    self.q.put(("ev", ev))
+        except Exception as exc:
+            self.err_tail.append(repr(exc))
+        finally:
+            self.answer_pending("Claude Code stopped", dead=True)
+            self.q.put(("eof", None))
+
+    def _read_err(self):
+        try:
+            for line in self.proc.stderr:
+                if line.strip():
+                    self.err_tail.append(line.strip()[:300])
+        except Exception:
+            pass
+
+    def exit_error(self):
+        tail = " ".join(self.err_tail)
+        log("claude code", "uscita", self.proc.poll() if self.proc else None, redact(tail[-800:]))
+        code = cc_error_code(tail[-300:]) if tail else "cc_exited"
+        return code if code.startswith("cc_") else "cc_exited"
+
+    # ---- interfaccia comune delle chat (thread di lavoro) ----
+    def settle(self):
+        """Prima di un nuovo messaggio: chiude il turno precedente se e rimasto a meta (limite di passi, una
+        richiesta 3D, un errore), rispondendo alle chiamate in sospeso e aspettando la fine della risposta."""
+        self.answer_pending("not executed: the turn has ended")
+        end = time.time() + 90
+        while self.turn_open and not self.dead:
+            try:
+                kind, data = self.q.get(timeout=max(0.1, end - time.time()))
+            except queue.Empty:
+                self.close()
+                raise ProviderError("cc_busy")
+            if kind == "call":
+                self.answer_pending("not executed: the turn has ended")
+            elif kind == "eof":
+                break
+            elif data.get("type") == "result":
+                self.turn_open = False
+        while True:                             # quello che resta (righe dopo la fine del turno) non serve piu
+            try:
+                kind, _data = self.q.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "eof":
+                self.dead = True
+
+    def abandon(self):
+        """chat_job ha finito il turno (risposta finale, limite di passi, richiesta 3D aperta, errore): le chiamate
+        che Claude Code fa ancora ricevono subito un errore, invece di aspettare il prossimo messaggio."""
+        self.answer_pending("not executed: the turn has ended; end your reply now", abandoned=True)
+
+    def add_user(self, text, images):
+        self.settle()
+        if self.dead:
+            raise ProviderError(self.exit_error())
+        with self.plock:
+            self.abandoned = False
+        content = [{"type": "image", "source": {"type": "base64", "media_type": im["mime"], "data": im["data"]}}
+                   for im in images or []]
+        content.append({"type": "text", "text": text})
+        line = json.dumps({"type": "user", "message": {"role": "user", "content": content}}, ensure_ascii=False)
+        try:
+            self.proc.stdin.write(line + "\n")
+            self.proc.stdin.flush()
+        except (OSError, ValueError):
+            self.dead = True
+            raise ProviderError(self.exit_error())
+        self.turn_open = True
+        self.history.append({"role": "user"})
+
+    def step(self, system, tools):
+        texts, calls, fail = [], [], None
+        deadline = time.time() + max(HTTP_TIMEOUT, 600)
+        while True:
+            wait = 0.3 if calls else max(1.0, deadline - time.time())
+            try:
+                kind, data = self.q.get(timeout=wait)
+            except queue.Empty:
+                if calls:                       # altre chiamate in parallelo non ne arrivano: si eseguono queste
+                    self.history.append({"role": "assistant"})
+                    return "\n\n".join(texts), calls, "tool_use"
+                raise ProviderError("timeout")
+            if kind == "call":
+                calls.append(data)
+                continue
+            if kind == "eof":
+                self.turn_open = False
+                raise ProviderError(fail or self.exit_error())
+            t = data.get("type")
+            if t == "assistant" and not data.get("parent_tool_use_id"):
+                blocks = (data.get("message") or {}).get("content") or []
+                said = "\n".join(b.get("text") or "" for b in blocks if b.get("type") == "text").strip()
+                if data.get("error"):           # l'errore arriva come testo dell'assistente: non e una risposta
+                    fail = cc_error_code(said, data.get("error"))
+                elif said:
+                    texts.append(said)
+            elif t == "result":
+                self.turn_open = False
+                if data.get("is_error") or data.get("subtype") != "success":
+                    raise ProviderError(fail or cc_error_code(data.get("result") or data.get("subtype") or ""))
+                if not texts and data.get("result"):
+                    texts.append(str(data["result"]))
+                self.history.append({"role": "assistant"})
+                return "\n\n".join(texts), calls, "end_turn"
+
+    def add_tool_results(self, results):
+        for cid, _name, content, err in results:
+            with self.plock:
+                slot = self.pending.pop(cid, None)
+            if slot is not None:
+                slot["res"] = (content, err)
+                slot["ev"].set()
+
+    def close(self):
+        """Si puo chiamare piu volte e da qualsiasi thread; non blocca: il processo si ferma su un thread a parte."""
+        self.answer_pending("Print Doctor closed this conversation", dead=True)
+        p, self.proc = self.proc, None
+        srv, self.srv = self.srv, None
+        folder, self.folder = self.folder, None
+        slot, self.slot = self.slot, None
+
+        def stop():
+            if p is not None:
+                try:
+                    p.terminate()
+                    p.wait(timeout=3)
+                except Exception:
+                    try:
+                        p.kill()
+                        p.wait(timeout=3)
+                    except Exception:
+                        pass
+                for f in (p.stdin, p.stdout, p.stderr):
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+            if srv is not None:
+                try:
+                    srv.shutdown()
+                    srv.server_close()
+                except Exception:
+                    pass
+        if p is not None or srv is not None:
+            threading.Thread(target=stop, name="print-doctor-cc-stop", daemon=True).start()
+        if folder:
+            try:
+                os.remove(os.path.join(folder, CC_FILES["server"]))     # il segreto non resta sul disco
+            except OSError:
+                pass
+        cc_unlock_slot(slot)
+
+
 SYSTEM_PROMPT = """You are the print assistant inside OrcaSlicer: an expert in FDM 3D printing and in OrcaSlicer settings.
 The user describes print problems or goals. Understand the problem, explain the likely causes briefly, and fix it by changing slicer settings with the propose_changes tool.
 
@@ -4492,6 +4928,8 @@ def make_conversation(settings, token_fn=None):
     pid = settings.get("provider", "openrouter")
     meta = PROVIDERS.get(pid, PROVIDERS["custom"])
     ps = settings.get("providers", {}).get(pid, {})
+    if meta["kind"] == "claudecode":
+        raise ProviderError("cc_exited")         # il processo si avvia sul thread UI (Assistant.cc_prepare)
     if meta["kind"] == "responses":
         if not ps.get("refresh_token") and not ps.get("access_token"):
             raise ProviderError("missing_login")
@@ -4515,12 +4953,23 @@ def make_conversation(settings, token_fn=None):
     return OpenAIChat(base, key, model, extra)
 
 
+def conv_signature(settings):
+    """Cambia quando serve una conversazione nuova (servizio, modello, chiave...); i token che si rinnovano non contano."""
+    ps = settings.get("providers", {}).get(settings.get("provider"), {})
+    return json.dumps([settings.get("provider"), {k: ps.get(k) for k in ("model", "base", "key", "client_id", "plan")},
+                       settings.get("effort")], sort_keys=True)
+
+
 def list_models(settings, token_fn=None):
     pid = settings.get("provider", "openrouter")
     meta = PROVIDERS.get(pid, PROVIDERS["custom"])
     ps = settings.get("providers", {}).get(pid, {})
     base = (ps.get("base") or meta["base"]).rstrip("/")
     key = (ps.get("key") or "").strip()
+    if meta["kind"] == "claudecode":
+        if not find_claude(ps.get("base") or ""):
+            raise ProviderError("cc_missing")
+        return list(CC_MODELS)                   # alias di Claude Code; vuoto = il modello predefinito di Claude Code
     if meta["kind"] == "responses":
         d = http_json(CG_API + "/models", None, {"Authorization": "Bearer " + token_fn()}, timeout=30)
         return [str(m["slug"]) for m in (d.get("models") or [])
@@ -4565,6 +5014,7 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
         self.busy = False
         self.conv = None
         self.conv_sig = None
+        self.retired = []          # conversazioni con un processo (Claude Code) da chiudere quando il lavoro in corso finisce
         self.last_context = None
         self.proposals = {}
         self.history = []          # cronologia delle modifiche della sessione (strumento change_history)
@@ -4677,6 +5127,13 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
             except Exception:
                 pass
         self.login_cancel.set()
+        for conv in self.retired + [self.conv]:
+            if hasattr(conv, "close"):
+                try:
+                    conv.close()
+                except Exception:
+                    pass
+        self.retired = []
         self.jobs.put(None)
         if self.panel is not None:
             try:
@@ -4790,8 +5247,47 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
                                   email=ps.get("email", ""), plan=bool(ps.get("plan")),
                                   welcomed=bool(ps.get("welcomed")), usage_url=CG_USAGE_URL,
                                   known=bool(ps.get("client_id")))
+            if pid == "claudecode":
+                provs[pid]["cc_path"] = find_claude(ps.get("base") or "")
         return {"provider": s.get("provider"), "providers": provs, "auto_apply": bool(s.get("auto_apply")),
                 "effort": s.get("effort", "medium")}
+
+    # ---- conversazione con un processo (Claude Code) ----
+    def drop_conv(self):
+        """Lascia la conversazione in corso. Un processo Claude Code si chiude subito, o a fine lavoro se il
+        thread di lavoro lo sta usando."""
+        old, self.conv = self.conv, None
+        if hasattr(old, "close"):
+            if self.busy:
+                self.retired.append(old)
+            else:
+                old.close()
+
+    def cc_prepare(self):
+        """Thread UI. Con Claude come servizio avvia qui Claude Code: OrcaSlicer chiede all'utente il permesso di
+        avviare un programma solo sul thread UI (dal thread di lavoro la prima volta lo nega). Codice d'errore o ''."""
+        settings = self.settings_copy()
+        if settings.get("provider") != "claudecode":
+            return ""
+        sig = conv_signature(settings)
+        if self.conv is not None and self.conv_sig == sig and not getattr(self.conv, "dead", False):
+            return ""
+        ps = settings.get("providers", {}).get("claudecode", {})
+        exe = find_claude(ps.get("base") or "")
+        if not exe:
+            return "cc_missing"
+        self.drop_conv()
+        try:
+            conv = ClaudeCodeChat(exe, (ps.get("model") or "").strip(), os.path.join(self.storage(), "claude"),
+                                  build_system(self.skills(), self.lang), TOOLS)
+        except PermissionError as exc:
+            log("claude code", "permesso negato", repr(exc))
+            return "cc_perm"
+        except Exception as exc:
+            log("claude code", "avvio", repr(exc))
+            return "cc_start"
+        self.conv, self.conv_sig, self.last_context = conv, sig, None
+        return ""
 
     # ---- thread di lavoro (uno solo) ----
     def emit(self, kind, **data):
@@ -4821,16 +5317,20 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
             except Exception:
                 self.emit("error", text=traceback.format_exc(limit=3))
             finally:
+                while self.retired and self.jobs.empty():
+                    try:
+                        self.retired.pop().close()
+                    except Exception:
+                        pass
                 if self.jobs.empty():
                     self.emit("idle")              # prima di busy=False: chi vede busy False ha gia l'evento nel buffer
                     self.busy = False
 
     # ---- chat (thread di lavoro: niente accesso al modello di Orca qui) ----
     def chat_job(self, text, images, snap, settings, skills, lang, files=None, blocks=None):
-        ps = settings.get("providers", {}).get(settings.get("provider"), {})
-        sig = json.dumps([settings.get("provider"), {k: ps.get(k) for k in ("model", "base", "key", "client_id", "plan")},
-                          settings.get("effort")], sort_keys=True)          # i token che si rinnovano non contano
+        sig = conv_signature(settings)
         if self.conv is None or self.conv_sig != sig:
+            self.drop_conv()                      # un processo Claude Code non resta aperto (si chiude a fine lavoro)
             try:
                 self.conv = make_conversation(settings, self.chatgpt_token)
             except ProviderError as exc:
@@ -4855,7 +5355,7 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
             ctx = ToolContext(snap, skills, bool(settings.get("auto_apply")), self.history)
             ctx.emit, ctx.open3d, ctx.analysis = self.emit, self.set_v3d, self.last_analysis
             system = build_system(skills, lang)
-            for _ in range(MAX_STEPS):
+            for _ in range(getattr(conv, "max_steps", MAX_STEPS)):
                 self.emit("status", text="thinking")
                 out_text, calls, _stop = conv.step(system, TOOLS)
                 if out_text.strip():
@@ -4885,12 +5385,17 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
                 self.emit("assistant", text="(step limit reached)")
         except Exception as exc:
             del conv.history[start:]          # il turno fallito (per qualsiasi errore) non resta nella conversazione
+            if getattr(conv, "dead", False) and self.conv is conv:
+                self.drop_conv()                  # Claude Code si e chiuso: il prossimo messaggio ne avvia un altro
             if isinstance(exc, ProviderError):
                 self.emit("error", text=str(exc))
             else:
                 log("chat", traceback.format_exc())
                 self.emit("error", text="%s: %s" % (type(exc).__name__, exc))
             return
+        finally:
+            if hasattr(conv, "abandon"):
+                conv.abandon()                    # Claude Code: le chiamate arrivate dopo la fine del turno non restano appese
         self.last_context = context
         if ctx.proposal:
             hist_add(self.history, ctx.proposal["id"], ctx.proposal["changes"], "proposed")
@@ -5538,6 +6043,10 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
         if self.busy or not self.turns:
             return False
         item = self.turns.popleft()
+        err = self.cc_prepare()
+        if err:
+            self.emit("error", text=err)
+            return False
         try:
             snap = take_snapshot(full=True)       # geometria fresca per gli strumenti che l'IA userà dopo
             snap["base"] = self.baseline(snap)
@@ -5668,7 +6177,7 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
             with self.lock:
                 pending = bool(self.outbox)
             if not self.busy and not pending and self.conv is not None:
-                self.conv = None                 # pagina nuova e vuota, niente in arrivo: come "new_chat"
+                self.drop_conv()                 # pagina nuova e vuota, niente in arrivo: come "new_chat"
                 self.last_context = None
                 self.proposals.clear()
             self.post({"type": "state", "lang": self.lang, "version": VERSION, "settings": self.public_settings(),
@@ -5691,6 +6200,11 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
             images = [im for im in (data.get("images") or []) if im.get("data")][:3]
             files = [f for f in (data.get("files") or []) if isinstance(f, dict)][:2]
             if not text and not images and not files:
+                return
+            err = self.cc_prepare()
+            if err:
+                self.emit("error", text=err)
+                self.post({"type": "events", "events": [], "busy": self.busy})
                 return
             snap = take_snapshot(full=True)       # include la geometria e i preset di sistema per gli strumenti
             snap["base"] = self.baseline(snap)
@@ -5717,7 +6231,7 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
                 self.notes.clear()
                 self.v3d_req = None
             self.last_analysis = None
-            self.conv = None
+            self.drop_conv()
             self.last_context = None
             self.proposals.clear()
             self.post({"type": "cleared"})
@@ -6061,7 +6575,7 @@ footer{padding:6px 8px 8px;border-top:1px solid var(--line);background:var(--pan
 .tg i{position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:var(--text);transition:left .15s}
 .tg.on{background:var(--acc)}.tg.on i{left:19px}
 .safe{display:flex;gap:8px;padding:10px 12px;border-radius:8px;background:var(--bar);font-size:11px;color:var(--soft)}
-.cinfo{font-size:11.5px;color:var(--soft)}
+.cinfo{font-size:11.5px;color:var(--soft);white-space:pre-line}
 .cerr{font-size:11.5px;color:var(--warn);background:var(--warn-bg);padding:7px 9px;border-radius:6px;word-break:break-word}
 .lnk{align-self:flex-start;padding:0;color:var(--acc);font-size:11.5px}
 .lnk:hover{color:var(--acc-hi);text-decoration:underline}
@@ -6149,6 +6663,7 @@ svg.fg .fgq{stroke:var(--warn);stroke-width:1.2;stroke-dasharray:4 3;fill:none}
   <div class="conn">
    <div class="cst"><span class="pdot" id="cDot"></span><span id="cTxt"></span><button class="btn sm" id="bUsage" type="button" hidden></button><button class="btn sm" id="bClear" type="button"></button></div>
    <div class="cinfo" id="cInfo" hidden></div>
+   <button class="lnk" id="bCcSetup" type="button" hidden></button>
    <div class="cerr" id="cErr" hidden></div>
    <div id="orBox" class="grp">
     <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn pri" id="bLogin" type="button"></button><button class="btn" id="bLoginX" type="button" hidden></button><button class="btn" id="bCopyLink" type="button" hidden></button></div>
@@ -6925,6 +7440,33 @@ var L={
   e_chatgpt_other_account:"你登入的是另一個 ChatGPT 帳號。請按「使用其他帳號」後再試一次。",
   e_cancelled:"已取消登入。",e_timeout:"已逾時：請重新登入。",slot:"槽位 %s",unsaved:"未儲存的變更"}
 };
+var LCC={
+ it:{provNote:"abbonamento, con Claude Code",ccFound:"Claude Code trovato: %s",ccMissing:"Claude Code non è stato trovato su questo computer.",ccInfo:"Usa il tuo piano Claude (Pro, Max…) tramite Claude Code installato su questo computer. Per attivarlo:\n1. Installa Claude Code (link qui sotto).\n2. Apri il Terminale, scrivi claude, accedi con il tuo account Claude e poi chiudilo.\n3. Manda un messaggio qui. Quando OrcaSlicer chiede se Print Doctor può avviare Claude Code, rispondi Sì.\nPrint Doctor non vede mai il tuo accesso. L'utilizzo conta nei limiti del tuo piano.",ccSetup:"Come installare Claude Code ↗",ccPath:"Programma Claude Code",ccPathHint:"Lascia vuoto: viene trovato da solo. Compila solo se non viene trovato.",ccModel:"predefinito di Claude Code",e_cc_missing:"Claude Code non è stato trovato. Installalo, oppure scrivi nelle Impostazioni il percorso del programma claude.",e_cc_login:"Claude Code non è collegato a un account. Apri il Terminale, scrivi claude e accedi con il tuo account Claude, poi riprova.",e_cc_limit:"Hai raggiunto il limite di utilizzo del tuo piano Claude. Riprova quando si azzera.",e_cc_perm:"OrcaSlicer non ha permesso a Print Doctor di avviare Claude Code. Rimanda il messaggio e rispondi Sì quando te lo chiede (oppure consentilo nella finestra Plugins).",e_cc_start:"Non è stato possibile avviare Claude Code. Controlla il percorso del programma nelle Impostazioni.",e_cc_exited:"Claude Code si è chiuso all'improvviso. Rimanda il messaggio; se succede ancora, scrivi claude nel Terminale per controllare che funzioni.",e_cc_busy:"Claude Code non ha finito in tempo la risposta precedente. Rimanda il messaggio."},
+ en:{provNote:"subscription, via Claude Code",ccFound:"Claude Code found: %s",ccMissing:"Claude Code was not found on this computer.",ccInfo:"Uses your Claude plan (Pro, Max…) through Claude Code installed on this computer. To turn it on:\n1. Install Claude Code (link below).\n2. Open a terminal, type claude, sign in with your Claude account, then close it.\n3. Send a message here. When OrcaSlicer asks whether Print Doctor may start Claude Code, answer Yes.\nPrint Doctor never sees your sign-in. Usage counts toward your plan's limits.",ccSetup:"How to install Claude Code ↗",ccPath:"Claude Code program",ccPathHint:"Leave empty: it is found automatically. Fill in only if it is not found.",ccModel:"Claude Code default",e_cc_missing:"Claude Code was not found. Install it, or enter the path of the claude program in Settings.",e_cc_login:"Claude Code is not signed in. Open a terminal, type claude and sign in with your Claude account, then try again.",e_cc_limit:"You reached your Claude plan usage limit. Try again when it resets.",e_cc_perm:"OrcaSlicer did not allow Print Doctor to start Claude Code. Send the message again and answer Yes when asked (or allow it in the Plugins window).",e_cc_start:"Claude Code could not be started. Check the program path in Settings.",e_cc_exited:"Claude Code stopped unexpectedly. Send the message again; if it keeps happening, type claude in a terminal to check that it works.",e_cc_busy:"Claude Code did not finish the previous reply in time. Send the message again."},
+ ca:{provNote:"subscripció, amb Claude Code",ccFound:"Claude Code trobat: %s",ccMissing:"No s'ha trobat Claude Code en aquest ordinador.",ccInfo:"Fa servir el teu pla de Claude (Pro, Max…) a través de Claude Code instal·lat en aquest ordinador. Per activar-lo:\n1. Instal·la Claude Code (enllaç a sota).\n2. Obre un terminal, escriu claude, inicia la sessió amb el teu compte de Claude i tanca'l.\n3. Envia un missatge aquí. Quan OrcaSlicer pregunti si Print Doctor pot iniciar Claude Code, respon Sí.\nPrint Doctor no veu mai el teu inici de sessió. L'ús compta dins dels límits del teu pla.",ccSetup:"Com instal·lar Claude Code ↗",ccPath:"Programa Claude Code",ccPathHint:"Deixa-ho buit: es troba automàticament. Omple-ho només si no es troba.",ccModel:"predeterminat de Claude Code",e_cc_missing:"No s'ha trobat Claude Code. Instal·la'l o escriu a la Configuració el camí del programa claude.",e_cc_login:"Claude Code no té cap sessió iniciada. Obre un terminal, escriu claude i inicia la sessió amb el teu compte de Claude; després torna-ho a provar.",e_cc_limit:"Has arribat al límit d'ús del teu pla de Claude. Torna-ho a provar quan es restableixi.",e_cc_perm:"OrcaSlicer no ha permès que Print Doctor iniciï Claude Code. Torna a enviar el missatge i respon Sí quan t'ho demani (o permet-ho a la finestra Plugins).",e_cc_start:"No s'ha pogut iniciar Claude Code. Comprova el camí del programa a la Configuració.",e_cc_exited:"Claude Code s'ha aturat de manera inesperada. Torna a enviar el missatge; si continua passant, escriu claude en un terminal per comprovar que funciona.",e_cc_busy:"Claude Code no ha acabat a temps la resposta anterior. Torna a enviar el missatge."},
+ cs:{provNote:"předplatné, přes Claude Code",ccFound:"Claude Code nalezen: %s",ccMissing:"Claude Code na tomto počítači nebyl nalezen.",ccInfo:"Používá tvůj tarif Claude (Pro, Max…) přes Claude Code nainstalovaný na tomto počítači. Zapnutí:\n1. Nainstaluj Claude Code (odkaz níže).\n2. Otevři terminál, napiš claude, přihlas se svým účtem Claude a pak ho zavři.\n3. Pošli sem zprávu. Až se OrcaSlicer zeptá, zda smí Print Doctor spustit Claude Code, odpověz Ano.\nPrint Doctor tvé přihlášení nikdy nevidí. Využití se započítává do limitů tvého tarifu.",ccSetup:"Jak nainstalovat Claude Code ↗",ccPath:"Program Claude Code",ccPathHint:"Nech prázdné: najde se automaticky. Vyplň jen tehdy, když se nenajde.",ccModel:"výchozí model Claude Code",e_cc_missing:"Claude Code nebyl nalezen. Nainstaluj ho, nebo zadej v Nastavení cestu k programu claude.",e_cc_login:"Claude Code není přihlášený. Otevři terminál, napiš claude, přihlas se svým účtem Claude a zkus to znovu.",e_cc_limit:"Dosáhl jsi limitu využití tarifu Claude. Zkus to znovu, až se limit obnoví.",e_cc_perm:"OrcaSlicer nepovolil Print Doctoru spustit Claude Code. Pošli zprávu znovu a na dotaz odpověz Ano (nebo to povol v okně Plugins).",e_cc_start:"Claude Code se nepodařilo spustit. Zkontroluj cestu k programu v Nastavení.",e_cc_exited:"Claude Code se nečekaně ukončil. Pošli zprávu znovu; pokud se to opakuje, napiš claude v terminálu a ověř, že funguje.",e_cc_busy:"Claude Code nedokončil předchozí odpověď včas. Pošli zprávu znovu."},
+ de:{provNote:"Abo, über Claude Code",ccFound:"Claude Code gefunden: %s",ccMissing:"Claude Code wurde auf diesem Computer nicht gefunden.",ccInfo:"Nutzt deinen Claude-Tarif (Pro, Max…) über Claude Code auf diesem Computer. So aktivierst du es:\n1. Installiere Claude Code (Link unten).\n2. Öffne ein Terminal, gib claude ein, melde dich mit deinem Claude-Konto an und schließe es wieder.\n3. Sende hier eine Nachricht. Wenn OrcaSlicer fragt, ob Print Doctor Claude Code starten darf, antworte mit Ja.\nPrint Doctor sieht deine Anmeldung nie. Die Nutzung zählt zu den Limits deines Tarifs.",ccSetup:"So installierst du Claude Code ↗",ccPath:"Programm Claude Code",ccPathHint:"Leer lassen: wird automatisch gefunden. Nur ausfüllen, wenn es nicht gefunden wird.",ccModel:"Standard von Claude Code",e_cc_missing:"Claude Code wurde nicht gefunden. Installiere es oder gib in den Einstellungen den Pfad zum Programm claude ein.",e_cc_login:"Claude Code ist nicht angemeldet. Öffne ein Terminal, gib claude ein, melde dich mit deinem Claude-Konto an und versuche es erneut.",e_cc_limit:"Du hast das Nutzungslimit deines Claude-Tarifs erreicht. Versuche es erneut, wenn es zurückgesetzt ist.",e_cc_perm:"OrcaSlicer hat Print Doctor nicht erlaubt, Claude Code zu starten. Sende die Nachricht erneut und antworte mit Ja, wenn gefragt wird (oder erlaube es im Fenster Plugins).",e_cc_start:"Claude Code konnte nicht gestartet werden. Prüfe den Programmpfad in den Einstellungen.",e_cc_exited:"Claude Code wurde unerwartet beendet. Sende die Nachricht erneut; wenn es wieder passiert, gib claude in einem Terminal ein und prüfe, ob es funktioniert.",e_cc_busy:"Claude Code hat die vorherige Antwort nicht rechtzeitig beendet. Sende die Nachricht erneut."},
+ es:{provNote:"suscripción, con Claude Code",ccFound:"Claude Code encontrado: %s",ccMissing:"No se encontró Claude Code en este ordenador.",ccInfo:"Usa tu plan de Claude (Pro, Max…) a través de Claude Code instalado en este ordenador. Para activarlo:\n1. Instala Claude Code (enlace abajo).\n2. Abre una terminal, escribe claude, inicia sesión con tu cuenta de Claude y ciérrala.\n3. Envía un mensaje aquí. Cuando OrcaSlicer pregunte si Print Doctor puede iniciar Claude Code, responde Sí.\nPrint Doctor nunca ve tu inicio de sesión. El uso cuenta en los límites de tu plan.",ccSetup:"Cómo instalar Claude Code ↗",ccPath:"Programa Claude Code",ccPathHint:"Déjalo vacío: se encuentra solo. Rellénalo solo si no se encuentra.",ccModel:"predeterminado de Claude Code",e_cc_missing:"No se encontró Claude Code. Instálalo o escribe en Ajustes la ruta del programa claude.",e_cc_login:"Claude Code no tiene sesión iniciada. Abre una terminal, escribe claude e inicia sesión con tu cuenta de Claude; luego vuelve a intentarlo.",e_cc_limit:"Has alcanzado el límite de uso de tu plan de Claude. Vuelve a intentarlo cuando se restablezca.",e_cc_perm:"OrcaSlicer no permitió que Print Doctor iniciara Claude Code. Vuelve a enviar el mensaje y responde Sí cuando te lo pregunte (o permítelo en la ventana Plugins).",e_cc_start:"No se pudo iniciar Claude Code. Comprueba la ruta del programa en Ajustes.",e_cc_exited:"Claude Code se cerró de forma inesperada. Vuelve a enviar el mensaje; si sigue pasando, escribe claude en una terminal para comprobar que funciona.",e_cc_busy:"Claude Code no terminó a tiempo la respuesta anterior. Vuelve a enviar el mensaje."},
+ eu:{provNote:"harpidetza, Claude Coderen bidez",ccFound:"Claude Code aurkitu da: %s",ccMissing:"Ez da Claude Code aurkitu ordenagailu honetan.",ccInfo:"Zure Claude plana (Pro, Max…) erabiltzen du ordenagailu honetan instalatutako Claude Coderen bidez. Aktibatzeko:\n1. Instalatu Claude Code (esteka behean).\n2. Ireki terminal bat, idatzi claude, hasi saioa zure Claude kontuarekin eta itxi.\n3. Bidali mezu bat hemen. OrcaSlicerrek Print Doctorrek Claude Code abiaraz dezakeen galdetzen duenean, erantzun Bai.\nPrint Doctorrek ez du inoiz zure saioa ikusten. Erabilera zure planaren mugetan zenbatzen da.",ccSetup:"Nola instalatu Claude Code ↗",ccPath:"Claude Code programa",ccPathHint:"Utzi hutsik: berez aurkitzen da. Bete soilik aurkitzen ez bada.",ccModel:"Claude Coderen lehenetsia",e_cc_missing:"Ez da Claude Code aurkitu. Instalatu, edo idatzi Ezarpenetan claude programaren bidea.",e_cc_login:"Claude Code ez dago saioa hasita. Ireki terminal bat, idatzi claude eta hasi saioa zure Claude kontuarekin; gero saiatu berriro.",e_cc_limit:"Zure Claude planaren erabilera-mugara iritsi zara. Saiatu berriro berrezartzen denean.",e_cc_perm:"OrcaSlicerrek ez dio Print Doctorri Claude Code abiarazten utzi. Bidali mezua berriro eta erantzun Bai galdetzen dizunean (edo baimendu Plugins leihoan).",e_cc_start:"Ezin izan da Claude Code abiarazi. Egiaztatu programaren bidea Ezarpenetan.",e_cc_exited:"Claude Code ustekabean itxi da. Bidali mezua berriro; berriz gertatzen bada, idatzi claude terminal batean funtzionatzen duela egiaztatzeko.",e_cc_busy:"Claude Codek ez du aurreko erantzuna garaiz amaitu. Bidali mezua berriro."},
+ fr:{provNote:"abonnement, via Claude Code",ccFound:"Claude Code trouvé : %s",ccMissing:"Claude Code est introuvable sur cet ordinateur.",ccInfo:"Utilise ton forfait Claude (Pro, Max…) via Claude Code installé sur cet ordinateur. Pour l'activer :\n1. Installe Claude Code (lien ci-dessous).\n2. Ouvre un terminal, tape claude, connecte-toi avec ton compte Claude, puis ferme-le.\n3. Envoie un message ici. Quand OrcaSlicer demande si Print Doctor peut lancer Claude Code, réponds Oui.\nPrint Doctor ne voit jamais ta connexion. L'utilisation compte dans les limites de ton forfait.",ccSetup:"Comment installer Claude Code ↗",ccPath:"Programme Claude Code",ccPathHint:"Laisse vide : il est trouvé automatiquement. À remplir seulement s'il n'est pas trouvé.",ccModel:"par défaut de Claude Code",e_cc_missing:"Claude Code est introuvable. Installe-le, ou indique dans les Réglages le chemin du programme claude.",e_cc_login:"Claude Code n'est pas connecté. Ouvre un terminal, tape claude et connecte-toi avec ton compte Claude, puis réessaie.",e_cc_limit:"Tu as atteint la limite d'utilisation de ton forfait Claude. Réessaie quand elle sera réinitialisée.",e_cc_perm:"OrcaSlicer n'a pas autorisé Print Doctor à lancer Claude Code. Renvoie le message et réponds Oui quand il le demande (ou autorise-le dans la fenêtre Plugins).",e_cc_start:"Impossible de lancer Claude Code. Vérifie le chemin du programme dans les Réglages.",e_cc_exited:"Claude Code s'est arrêté de façon inattendue. Renvoie le message ; si cela se répète, tape claude dans un terminal pour vérifier qu'il fonctionne.",e_cc_busy:"Claude Code n'a pas terminé à temps la réponse précédente. Renvoie le message."},
+ hu:{provNote:"előfizetés, Claude Code-dal",ccFound:"Claude Code megtalálva: %s",ccMissing:"A Claude Code nem található ezen a számítógépen.",ccInfo:"A Claude-csomagodat (Pro, Max…) használja az ezen a gépen telepített Claude Code-on keresztül. Bekapcsolás:\n1. Telepítsd a Claude Code-ot (link lent).\n2. Nyiss egy terminált, írd be: claude, jelentkezz be a Claude-fiókoddal, majd zárd be.\n3. Küldj ide egy üzenetet. Amikor az OrcaSlicer megkérdezi, elindíthatja-e a Print Doctor a Claude Code-ot, válaszolj Igennel.\nA Print Doctor soha nem látja a bejelentkezésedet. A használat a csomagod korlátaiba számít.",ccSetup:"A Claude Code telepítése ↗",ccPath:"Claude Code program",ccPathHint:"Hagyd üresen: magától megtalálja. Csak akkor töltsd ki, ha nem találja.",ccModel:"a Claude Code alapértelmezése",e_cc_missing:"A Claude Code nem található. Telepítsd, vagy add meg a Beállításokban a claude program elérési útját.",e_cc_login:"A Claude Code nincs bejelentkezve. Nyiss egy terminált, írd be: claude, jelentkezz be a Claude-fiókoddal, majd próbáld újra.",e_cc_limit:"Elérted a Claude-csomagod használati korlátját. Próbáld újra, amikor visszaáll.",e_cc_perm:"Az OrcaSlicer nem engedte, hogy a Print Doctor elindítsa a Claude Code-ot. Küldd el újra az üzenetet, és kérdésre válaszolj Igennel (vagy engedélyezd a Plugins ablakban).",e_cc_start:"A Claude Code nem indítható. Ellenőrizd a program elérési útját a Beállításokban.",e_cc_exited:"A Claude Code váratlanul leállt. Küldd el újra az üzenetet; ha ismét előfordul, írd be terminálban: claude, és ellenőrizd, hogy működik-e.",e_cc_busy:"A Claude Code nem fejezte be időben az előző választ. Küldd el újra az üzenetet."},
+ ja:{provNote:"サブスクリプション（Claude Code 経由）",ccFound:"Claude Code が見つかりました: %s",ccMissing:"このコンピューターに Claude Code が見つかりません。",ccInfo:"このコンピューターにインストールされた Claude Code を通じて、あなたの Claude プラン（Pro、Max…）を使います。有効にするには:\n1. Claude Code をインストールします（下のリンク）。\n2. ターミナルを開いて claude と入力し、Claude アカウントでログインしてから閉じます。\n3. ここでメッセージを送ります。OrcaSlicer が Print Doctor に Claude Code の起動を許可するか尋ねたら「はい」を選びます。\nPrint Doctor があなたのログイン情報を見ることはありません。使用量はプランの上限に含まれます。",ccSetup:"Claude Code のインストール方法 ↗",ccPath:"Claude Code プログラム",ccPathHint:"空欄のままで自動的に見つかります。見つからない場合のみ入力してください。",ccModel:"Claude Code の既定",e_cc_missing:"Claude Code が見つかりません。インストールするか、設定で claude プログラムのパスを入力してください。",e_cc_login:"Claude Code にログインしていません。ターミナルを開いて claude と入力し、Claude アカウントでログインしてから、もう一度お試しください。",e_cc_limit:"Claude プランの使用上限に達しました。リセット後にもう一度お試しください。",e_cc_perm:"OrcaSlicer が Print Doctor による Claude Code の起動を許可しませんでした。もう一度メッセージを送り、確認が出たら「はい」を選んでください（または Plugins ウィンドウで許可してください）。",e_cc_start:"Claude Code を起動できませんでした。設定でプログラムのパスを確認してください。",e_cc_exited:"Claude Code が予期せず終了しました。もう一度メッセージを送ってください。繰り返す場合は、ターミナルで claude と入力して動作を確認してください。",e_cc_busy:"Claude Code が前の返答を時間内に終えませんでした。もう一度メッセージを送ってください。"},
+ ko:{provNote:"구독, Claude Code 사용",ccFound:"Claude Code 찾음: %s",ccMissing:"이 컴퓨터에서 Claude Code를 찾지 못했습니다.",ccInfo:"이 컴퓨터에 설치된 Claude Code를 통해 Claude 요금제(Pro, Max…)를 사용합니다. 켜는 방법:\n1. Claude Code를 설치합니다(아래 링크).\n2. 터미널을 열고 claude를 입력해 Claude 계정으로 로그인한 뒤 닫습니다.\n3. 여기에서 메시지를 보냅니다. OrcaSlicer가 Print Doctor의 Claude Code 실행을 허용할지 물으면 예를 누릅니다.\nPrint Doctor는 로그인 정보를 절대 보지 않습니다. 사용량은 요금제 한도에 포함됩니다.",ccSetup:"Claude Code 설치 방법 ↗",ccPath:"Claude Code 프로그램",ccPathHint:"비워 두세요: 자동으로 찾습니다. 찾지 못할 때만 입력하세요.",ccModel:"Claude Code 기본값",e_cc_missing:"Claude Code를 찾지 못했습니다. 설치하거나 설정에 claude 프로그램 경로를 입력하세요.",e_cc_login:"Claude Code에 로그인되어 있지 않습니다. 터미널을 열고 claude를 입력해 Claude 계정으로 로그인한 뒤 다시 시도하세요.",e_cc_limit:"Claude 요금제 사용 한도에 도달했습니다. 초기화된 후 다시 시도하세요.",e_cc_perm:"OrcaSlicer가 Print Doctor의 Claude Code 실행을 허용하지 않았습니다. 메시지를 다시 보내고 물어보면 예를 누르세요(또는 Plugins 창에서 허용하세요).",e_cc_start:"Claude Code를 시작할 수 없습니다. 설정에서 프로그램 경로를 확인하세요.",e_cc_exited:"Claude Code가 예기치 않게 종료되었습니다. 메시지를 다시 보내세요. 계속 발생하면 터미널에서 claude를 입력해 작동하는지 확인하세요.",e_cc_busy:"Claude Code가 이전 답변을 제시간에 끝내지 못했습니다. 메시지를 다시 보내세요."},
+ lt:{provNote:"prenumerata, per Claude Code",ccFound:"Claude Code rastas: %s",ccMissing:"Šiame kompiuteryje Claude Code nerastas.",ccInfo:"Naudoja tavo Claude planą (Pro, Max…) per šiame kompiuteryje įdiegtą Claude Code. Kaip įjungti:\n1. Įdiek Claude Code (nuoroda žemiau).\n2. Atidaryk terminalą, įvesk claude, prisijunk su savo Claude paskyra ir uždaryk.\n3. Išsiųsk čia žinutę. Kai OrcaSlicer paklaus, ar Print Doctor gali paleisti Claude Code, atsakyk Taip.\nPrint Doctor niekada nemato tavo prisijungimo. Naudojimas įskaičiuojamas į tavo plano limitus.",ccSetup:"Kaip įdiegti Claude Code ↗",ccPath:"Claude Code programa",ccPathHint:"Palik tuščią: randama automatiškai. Pildyk tik jei nerandama.",ccModel:"Claude Code numatytasis",e_cc_missing:"Claude Code nerastas. Įdiek jį arba Parametruose įrašyk programos claude kelią.",e_cc_login:"Claude Code neprisijungęs. Atidaryk terminalą, įvesk claude ir prisijunk su savo Claude paskyra, tada bandyk dar kartą.",e_cc_limit:"Pasiekei savo Claude plano naudojimo limitą. Bandyk dar kartą, kai jis atsinaujins.",e_cc_perm:"OrcaSlicer neleido Print Doctor paleisti Claude Code. Išsiųsk žinutę dar kartą ir paklaustas atsakyk Taip (arba leisk tai Plugins lange).",e_cc_start:"Nepavyko paleisti Claude Code. Patikrink programos kelią Parametruose.",e_cc_exited:"Claude Code netikėtai išsijungė. Išsiųsk žinutę dar kartą; jei kartojasi, terminale įvesk claude ir patikrink, ar veikia.",e_cc_busy:"Claude Code laiku nebaigė ankstesnio atsakymo. Išsiųsk žinutę dar kartą."},
+ nl:{provNote:"abonnement, via Claude Code",ccFound:"Claude Code gevonden: %s",ccMissing:"Claude Code is niet gevonden op deze computer.",ccInfo:"Gebruikt je Claude-abonnement (Pro, Max…) via Claude Code op deze computer. Zo zet je het aan:\n1. Installeer Claude Code (link hieronder).\n2. Open een terminal, typ claude, log in met je Claude-account en sluit hem weer.\n3. Stuur hier een bericht. Als OrcaSlicer vraagt of Print Doctor Claude Code mag starten, antwoord dan Ja.\nPrint Doctor ziet je inlog nooit. Het gebruik telt mee voor de limieten van je abonnement.",ccSetup:"Zo installeer je Claude Code ↗",ccPath:"Programma Claude Code",ccPathHint:"Leeg laten: wordt automatisch gevonden. Alleen invullen als het niet gevonden wordt.",ccModel:"standaard van Claude Code",e_cc_missing:"Claude Code is niet gevonden. Installeer het, of vul in de Instellingen het pad naar het programma claude in.",e_cc_login:"Claude Code is niet ingelogd. Open een terminal, typ claude en log in met je Claude-account; probeer het daarna opnieuw.",e_cc_limit:"Je hebt de gebruikslimiet van je Claude-abonnement bereikt. Probeer het opnieuw als die is gereset.",e_cc_perm:"OrcaSlicer stond Print Doctor niet toe Claude Code te starten. Stuur het bericht opnieuw en antwoord Ja als ernaar gevraagd wordt (of sta het toe in het venster Plugins).",e_cc_start:"Claude Code kon niet worden gestart. Controleer het programmapad in de Instellingen.",e_cc_exited:"Claude Code is onverwacht gestopt. Stuur het bericht opnieuw; gebeurt het weer, typ dan claude in een terminal om te controleren of het werkt.",e_cc_busy:"Claude Code heeft het vorige antwoord niet op tijd afgerond. Stuur het bericht opnieuw."},
+ pl:{provNote:"subskrypcja, przez Claude Code",ccFound:"Znaleziono Claude Code: %s",ccMissing:"Nie znaleziono Claude Code na tym komputerze.",ccInfo:"Korzysta z twojego planu Claude (Pro, Max…) przez Claude Code zainstalowany na tym komputerze. Jak włączyć:\n1. Zainstaluj Claude Code (link poniżej).\n2. Otwórz terminal, wpisz claude, zaloguj się kontem Claude i zamknij go.\n3. Wyślij tu wiadomość. Gdy OrcaSlicer zapyta, czy Print Doctor może uruchomić Claude Code, odpowiedz Tak.\nPrint Doctor nigdy nie widzi twojego logowania. Użycie wlicza się do limitów twojego planu.",ccSetup:"Jak zainstalować Claude Code ↗",ccPath:"Program Claude Code",ccPathHint:"Zostaw puste: zostanie znaleziony automatycznie. Wypełnij tylko, jeśli nie zostanie znaleziony.",ccModel:"domyślny Claude Code",e_cc_missing:"Nie znaleziono Claude Code. Zainstaluj go albo wpisz w Ustawieniach ścieżkę programu claude.",e_cc_login:"Claude Code nie jest zalogowany. Otwórz terminal, wpisz claude i zaloguj się kontem Claude, potem spróbuj ponownie.",e_cc_limit:"Osiągnięto limit użycia twojego planu Claude. Spróbuj ponownie po jego odnowieniu.",e_cc_perm:"OrcaSlicer nie pozwolił Print Doctorowi uruchomić Claude Code. Wyślij wiadomość ponownie i odpowiedz Tak, gdy pojawi się pytanie (albo zezwól na to w oknie Plugins).",e_cc_start:"Nie udało się uruchomić Claude Code. Sprawdź ścieżkę programu w Ustawieniach.",e_cc_exited:"Claude Code nieoczekiwanie się zamknął. Wyślij wiadomość ponownie; jeśli to się powtarza, wpisz claude w terminalu i sprawdź, czy działa.",e_cc_busy:"Claude Code nie dokończył na czas poprzedniej odpowiedzi. Wyślij wiadomość ponownie."},
+ pt_BR:{provNote:"assinatura, via Claude Code",ccFound:"Claude Code encontrado: %s",ccMissing:"O Claude Code não foi encontrado neste computador.",ccInfo:"Usa o seu plano Claude (Pro, Max…) através do Claude Code instalado neste computador. Para ativar:\n1. Instale o Claude Code (link abaixo).\n2. Abra um terminal, digite claude, entre com sua conta Claude e depois feche.\n3. Envie uma mensagem aqui. Quando o OrcaSlicer perguntar se o Print Doctor pode iniciar o Claude Code, responda Sim.\nO Print Doctor nunca vê o seu login. O uso conta nos limites do seu plano.",ccSetup:"Como instalar o Claude Code ↗",ccPath:"Programa Claude Code",ccPathHint:"Deixe vazio: ele é encontrado automaticamente. Preencha só se não for encontrado.",ccModel:"padrão do Claude Code",e_cc_missing:"O Claude Code não foi encontrado. Instale-o ou informe nas Configurações o caminho do programa claude.",e_cc_login:"O Claude Code não está conectado a uma conta. Abra um terminal, digite claude e entre com sua conta Claude; depois tente de novo.",e_cc_limit:"Você atingiu o limite de uso do seu plano Claude. Tente de novo quando ele for renovado.",e_cc_perm:"O OrcaSlicer não permitiu que o Print Doctor iniciasse o Claude Code. Envie a mensagem de novo e responda Sim quando perguntado (ou permita na janela Plugins).",e_cc_start:"Não foi possível iniciar o Claude Code. Verifique o caminho do programa nas Configurações.",e_cc_exited:"O Claude Code fechou inesperadamente. Envie a mensagem de novo; se continuar acontecendo, digite claude em um terminal para verificar se funciona.",e_cc_busy:"O Claude Code não terminou a resposta anterior a tempo. Envie a mensagem de novo."},
+ ru:{provNote:"подписка, через Claude Code",ccFound:"Claude Code найден: %s",ccMissing:"Claude Code не найден на этом компьютере.",ccInfo:"Использует ваш тариф Claude (Pro, Max…) через Claude Code, установленный на этом компьютере. Как включить:\n1. Установите Claude Code (ссылка ниже).\n2. Откройте терминал, введите claude, войдите в свой аккаунт Claude и закройте терминал.\n3. Отправьте здесь сообщение. Когда OrcaSlicer спросит, можно ли Print Doctor запустить Claude Code, ответьте «Да».\nPrint Doctor никогда не видит ваши данные входа. Использование учитывается в лимитах вашего тарифа.",ccSetup:"Как установить Claude Code ↗",ccPath:"Программа Claude Code",ccPathHint:"Оставьте пустым: программа найдётся сама. Заполняйте, только если она не найдена.",ccModel:"по умолчанию Claude Code",e_cc_missing:"Claude Code не найден. Установите его или укажите в Настройках путь к программе claude.",e_cc_login:"В Claude Code не выполнен вход. Откройте терминал, введите claude и войдите в свой аккаунт Claude, затем повторите попытку.",e_cc_limit:"Достигнут лимит использования вашего тарифа Claude. Повторите попытку после его сброса.",e_cc_perm:"OrcaSlicer не разрешил Print Doctor запустить Claude Code. Отправьте сообщение ещё раз и ответьте «Да» на запрос (или разрешите это в окне Plugins).",e_cc_start:"Не удалось запустить Claude Code. Проверьте путь к программе в Настройках.",e_cc_exited:"Claude Code неожиданно завершился. Отправьте сообщение ещё раз; если это повторяется, введите claude в терминале и проверьте, что он работает.",e_cc_busy:"Claude Code не успел закончить предыдущий ответ. Отправьте сообщение ещё раз."},
+ sv:{provNote:"abonnemang, via Claude Code",ccFound:"Claude Code hittades: %s",ccMissing:"Claude Code hittades inte på den här datorn.",ccInfo:"Använder din Claude-plan (Pro, Max…) via Claude Code som är installerat på den här datorn. Så aktiverar du det:\n1. Installera Claude Code (länk nedan).\n2. Öppna en terminal, skriv claude, logga in med ditt Claude-konto och stäng den sedan.\n3. Skicka ett meddelande här. När OrcaSlicer frågar om Print Doctor får starta Claude Code, svara Ja.\nPrint Doctor ser aldrig din inloggning. Användningen räknas mot din plans gränser.",ccSetup:"Så installerar du Claude Code ↗",ccPath:"Programmet Claude Code",ccPathHint:"Lämna tomt: det hittas automatiskt. Fyll bara i om det inte hittas.",ccModel:"standard i Claude Code",e_cc_missing:"Claude Code hittades inte. Installera det, eller ange sökvägen till programmet claude i Inställningar.",e_cc_login:"Claude Code är inte inloggat. Öppna en terminal, skriv claude och logga in med ditt Claude-konto, försök sedan igen.",e_cc_limit:"Du har nått användningsgränsen för din Claude-plan. Försök igen när den har återställts.",e_cc_perm:"OrcaSlicer tillät inte Print Doctor att starta Claude Code. Skicka meddelandet igen och svara Ja när du blir tillfrågad (eller tillåt det i fönstret Plugins).",e_cc_start:"Claude Code kunde inte startas. Kontrollera programmets sökväg i Inställningar.",e_cc_exited:"Claude Code avslutades oväntat. Skicka meddelandet igen; om det fortsätter, skriv claude i en terminal för att kontrollera att det fungerar.",e_cc_busy:"Claude Code blev inte klart med föregående svar i tid. Skicka meddelandet igen."},
+ th:{provNote:"การสมัครสมาชิก ผ่าน Claude Code",ccFound:"พบ Claude Code: %s",ccMissing:"ไม่พบ Claude Code ในคอมพิวเตอร์เครื่องนี้",ccInfo:"ใช้แพ็กเกจ Claude ของคุณ (Pro, Max…) ผ่าน Claude Code ที่ติดตั้งในคอมพิวเตอร์เครื่องนี้ วิธีเปิดใช้:\n1. ติดตั้ง Claude Code (ลิงก์ด้านล่าง)\n2. เปิดเทอร์มินัล พิมพ์ claude เข้าสู่ระบบด้วยบัญชี Claude แล้วปิด\n3. ส่งข้อความที่นี่ เมื่อ OrcaSlicer ถามว่าอนุญาตให้ Print Doctor เปิด Claude Code หรือไม่ ให้ตอบ ใช่\nPrint Doctor ไม่เคยเห็นข้อมูลการเข้าสู่ระบบของคุณ การใช้งานนับรวมในขีดจำกัดของแพ็กเกจ",ccSetup:"วิธีติดตั้ง Claude Code ↗",ccPath:"โปรแกรม Claude Code",ccPathHint:"เว้นว่างไว้: ระบบจะค้นหาให้เอง กรอกเฉพาะเมื่อหาไม่พบ",ccModel:"ค่าเริ่มต้นของ Claude Code",e_cc_missing:"ไม่พบ Claude Code ติดตั้งก่อน หรือใส่ตำแหน่งของโปรแกรม claude ในการตั้งค่า",e_cc_login:"Claude Code ยังไม่ได้เข้าสู่ระบบ เปิดเทอร์มินัล พิมพ์ claude แล้วเข้าสู่ระบบด้วยบัญชี Claude จากนั้นลองอีกครั้ง",e_cc_limit:"คุณใช้ถึงขีดจำกัดของแพ็กเกจ Claude แล้ว ลองอีกครั้งเมื่อรีเซ็ต",e_cc_perm:"OrcaSlicer ไม่อนุญาตให้ Print Doctor เปิด Claude Code ส่งข้อความอีกครั้งแล้วตอบ ใช่ เมื่อถูกถาม (หรืออนุญาตในหน้าต่าง Plugins)",e_cc_start:"เปิด Claude Code ไม่ได้ ตรวจสอบตำแหน่งโปรแกรมในการตั้งค่า",e_cc_exited:"Claude Code ปิดไปโดยไม่คาดคิด ส่งข้อความอีกครั้ง หากยังเกิดขึ้น ให้พิมพ์ claude ในเทอร์มินัลเพื่อตรวจว่าทำงานได้",e_cc_busy:"Claude Code ตอบข้อความก่อนหน้าไม่เสร็จทันเวลา ส่งข้อความอีกครั้ง"},
+ tr:{provNote:"abonelik, Claude Code ile",ccFound:"Claude Code bulundu: %s",ccMissing:"Bu bilgisayarda Claude Code bulunamadı.",ccInfo:"Bu bilgisayarda kurulu Claude Code aracılığıyla Claude planını (Pro, Max…) kullanır. Açmak için:\n1. Claude Code'u kur (aşağıdaki bağlantı).\n2. Bir terminal aç, claude yaz, Claude hesabınla giriş yap ve kapat.\n3. Buradan bir mesaj gönder. OrcaSlicer, Print Doctor'ın Claude Code'u başlatıp başlatamayacağını sorduğunda Evet de.\nPrint Doctor girişini asla görmez. Kullanım, planının sınırlarına sayılır.",ccSetup:"Claude Code nasıl kurulur ↗",ccPath:"Claude Code programı",ccPathHint:"Boş bırak: otomatik bulunur. Yalnızca bulunamazsa doldur.",ccModel:"Claude Code varsayılanı",e_cc_missing:"Claude Code bulunamadı. Kur veya Ayarlar'a claude programının yolunu yaz.",e_cc_login:"Claude Code'da oturum açılmamış. Bir terminal aç, claude yaz ve Claude hesabınla giriş yap, sonra tekrar dene.",e_cc_limit:"Claude planının kullanım sınırına ulaştın. Sıfırlandığında tekrar dene.",e_cc_perm:"OrcaSlicer, Print Doctor'ın Claude Code'u başlatmasına izin vermedi. Mesajı yeniden gönder ve sorulduğunda Evet de (veya Plugins penceresinde izin ver).",e_cc_start:"Claude Code başlatılamadı. Ayarlar'da program yolunu kontrol et.",e_cc_exited:"Claude Code beklenmedik şekilde kapandı. Mesajı yeniden gönder; tekrar olursa, çalıştığını görmek için terminalde claude yaz.",e_cc_busy:"Claude Code önceki yanıtı zamanında bitirmedi. Mesajı yeniden gönder."},
+ uk:{provNote:"підписка, через Claude Code",ccFound:"Claude Code знайдено: %s",ccMissing:"Claude Code не знайдено на цьому комп'ютері.",ccInfo:"Використовує ваш тариф Claude (Pro, Max…) через Claude Code, встановлений на цьому комп'ютері. Як увімкнути:\n1. Встановіть Claude Code (посилання нижче).\n2. Відкрийте термінал, введіть claude, увійдіть у свій акаунт Claude і закрийте термінал.\n3. Надішліть тут повідомлення. Коли OrcaSlicer запитає, чи може Print Doctor запустити Claude Code, відповідайте «Так».\nPrint Doctor ніколи не бачить ваших даних входу. Використання зараховується до лімітів вашого тарифу.",ccSetup:"Як встановити Claude Code ↗",ccPath:"Програма Claude Code",ccPathHint:"Залиште порожнім: програму буде знайдено автоматично. Заповнюйте, лише якщо її не знайдено.",ccModel:"типова модель Claude Code",e_cc_missing:"Claude Code не знайдено. Встановіть його або вкажіть у Налаштуваннях шлях до програми claude.",e_cc_login:"У Claude Code не виконано вхід. Відкрийте термінал, введіть claude і увійдіть у свій акаунт Claude, потім спробуйте ще раз.",e_cc_limit:"Досягнуто ліміту використання вашого тарифу Claude. Спробуйте ще раз після його скидання.",e_cc_perm:"OrcaSlicer не дозволив Print Doctor запустити Claude Code. Надішліть повідомлення ще раз і відповідайте «Так» на запит (або дозвольте це у вікні Plugins).",e_cc_start:"Не вдалося запустити Claude Code. Перевірте шлях до програми в Налаштуваннях.",e_cc_exited:"Claude Code несподівано завершився. Надішліть повідомлення ще раз; якщо це повторюється, введіть claude у терміналі й перевірте, що він працює.",e_cc_busy:"Claude Code не встиг завершити попередню відповідь. Надішліть повідомлення ще раз."},
+ vi:{provNote:"gói đăng ký, qua Claude Code",ccFound:"Đã tìm thấy Claude Code: %s",ccMissing:"Không tìm thấy Claude Code trên máy tính này.",ccInfo:"Dùng gói Claude của bạn (Pro, Max…) thông qua Claude Code cài trên máy tính này. Cách bật:\n1. Cài Claude Code (liên kết bên dưới).\n2. Mở terminal, gõ claude, đăng nhập bằng tài khoản Claude rồi đóng lại.\n3. Gửi một tin nhắn tại đây. Khi OrcaSlicer hỏi có cho phép Print Doctor khởi chạy Claude Code không, hãy chọn Có.\nPrint Doctor không bao giờ thấy thông tin đăng nhập của bạn. Mức sử dụng được tính vào giới hạn của gói.",ccSetup:"Cách cài Claude Code ↗",ccPath:"Chương trình Claude Code",ccPathHint:"Để trống: sẽ được tự động tìm thấy. Chỉ điền nếu không tìm thấy.",ccModel:"mặc định của Claude Code",e_cc_missing:"Không tìm thấy Claude Code. Hãy cài đặt, hoặc nhập đường dẫn chương trình claude trong Cài đặt.",e_cc_login:"Claude Code chưa đăng nhập. Mở terminal, gõ claude và đăng nhập bằng tài khoản Claude, rồi thử lại.",e_cc_limit:"Bạn đã đạt giới hạn sử dụng của gói Claude. Hãy thử lại khi giới hạn được đặt lại.",e_cc_perm:"OrcaSlicer không cho phép Print Doctor khởi chạy Claude Code. Gửi lại tin nhắn và chọn Có khi được hỏi (hoặc cho phép trong cửa sổ Plugins).",e_cc_start:"Không thể khởi chạy Claude Code. Kiểm tra đường dẫn chương trình trong Cài đặt.",e_cc_exited:"Claude Code đã dừng đột ngột. Gửi lại tin nhắn; nếu vẫn xảy ra, gõ claude trong terminal để kiểm tra xem nó có hoạt động không.",e_cc_busy:"Claude Code chưa kịp hoàn tất câu trả lời trước. Gửi lại tin nhắn."},
+ zh_CN:{provNote:"订阅，通过 Claude Code",ccFound:"已找到 Claude Code：%s",ccMissing:"在这台电脑上找不到 Claude Code。",ccInfo:"通过这台电脑上安装的 Claude Code 使用你的 Claude 套餐（Pro、Max…）。启用方法：\n1. 安装 Claude Code（见下方链接）。\n2. 打开终端，输入 claude，用你的 Claude 账号登录，然后关闭终端。\n3. 在这里发送一条消息。OrcaSlicer 询问是否允许 Print Doctor 启动 Claude Code 时，选择“是”。\nPrint Doctor 永远看不到你的登录信息。用量计入你套餐的限额。",ccSetup:"如何安装 Claude Code ↗",ccPath:"Claude Code 程序",ccPathHint:"留空即可：会自动找到。只有找不到时才填写。",ccModel:"Claude Code 默认",e_cc_missing:"找不到 Claude Code。请安装它，或在设置中填写 claude 程序的路径。",e_cc_login:"Claude Code 尚未登录。打开终端，输入 claude 并用你的 Claude 账号登录，然后重试。",e_cc_limit:"你已达到 Claude 套餐的用量上限。请在重置后重试。",e_cc_perm:"OrcaSlicer 未允许 Print Doctor 启动 Claude Code。请重新发送消息，并在询问时选择“是”（或在 Plugins 窗口中允许）。",e_cc_start:"无法启动 Claude Code。请在设置中检查程序路径。",e_cc_exited:"Claude Code 意外退出。请重新发送消息；如果仍然发生，请在终端中输入 claude 检查它是否正常。",e_cc_busy:"Claude Code 未能及时完成上一条回复。请重新发送消息。"},
+ zh_TW:{provNote:"訂閱，透過 Claude Code",ccFound:"已找到 Claude Code：%s",ccMissing:"在這台電腦上找不到 Claude Code。",ccInfo:"透過這台電腦上安裝的 Claude Code 使用你的 Claude 方案（Pro、Max…）。啟用方式：\n1. 安裝 Claude Code（見下方連結）。\n2. 開啟終端機，輸入 claude，用你的 Claude 帳號登入，然後關閉終端機。\n3. 在這裡傳送一則訊息。OrcaSlicer 詢問是否允許 Print Doctor 啟動 Claude Code 時，選擇「是」。\nPrint Doctor 永遠看不到你的登入資訊。用量會計入你方案的限額。",ccSetup:"如何安裝 Claude Code ↗",ccPath:"Claude Code 程式",ccPathHint:"留空即可：會自動找到。只有找不到時才填寫。",ccModel:"Claude Code 預設",e_cc_missing:"找不到 Claude Code。請安裝它，或在設定中填寫 claude 程式的路徑。",e_cc_login:"Claude Code 尚未登入。開啟終端機，輸入 claude 並用你的 Claude 帳號登入，然後再試一次。",e_cc_limit:"你已達到 Claude 方案的用量上限。請在重設後再試一次。",e_cc_perm:"OrcaSlicer 未允許 Print Doctor 啟動 Claude Code。請重新傳送訊息，並在詢問時選擇「是」（或在 Plugins 視窗中允許）。",e_cc_start:"無法啟動 Claude Code。請在設定中檢查程式路徑。",e_cc_exited:"Claude Code 意外結束。請重新傳送訊息；如果仍然發生，請在終端機中輸入 claude 檢查它是否正常。",e_cc_busy:"Claude Code 未能及時完成上一則回覆。請重新傳送訊息。"}
+};
+/* testi di Claude (Claude Code) aggiunti a ogni lingua */
+for(var lk in L){var lx=LCC[lk]||LCC.en;for(var ly in lx){if(ly=="provNote")L[lk].provNote.claudecode=lx[ly];else L[lk][ly]=lx[ly]}}
 var T=L.en,S=null,busy=false,autoSet=false,imgs=[],files=[],donate="",meshdab="",skshare="",pollT=null,cards={},turn=null,lastCard=null,loginCopy="",version="",WEL=document.getElementById("welcome");
 function $(id){return document.getElementById(id)}
 function fmt(s){var a=arguments,i=1;return s.replace(/%s/g,function(){return a[i++]})}
@@ -6966,7 +7508,7 @@ function ui(){
 }
 /* ---------- stato del servizio IA ---------- */
 function prov(){return S?S.providers[S.provider]:null}
-function connected(p){if(!p)return false;if(S.provider=="chatgpt"&&p.kind=="responses")return p.signed_in&&p.plan;return !p.needs_key||p.has_key}
+function connected(p){if(!p)return false;if(p.kind=="claudecode")return !!p.cc_path;if(S.provider=="chatgpt"&&p.kind=="responses")return p.signed_in&&p.plan;return !p.needs_key||p.has_key}
 /* servizio con un account o una chiave salvata (i modelli locali non contano: non c'è niente da collegare) */
 function linked(id,q){return id=="chatgpt"?!!(q.signed_in&&q.plan):!!(q.needs_key&&q.has_key)}
 function header(){
@@ -6981,23 +7523,25 @@ function fillSettings(){
  var g=$("provs");g.innerHTML="";
  Object.keys(S.providers).forEach(function(id){var q=S.providers[id],on=linked(id,q),sel=id==k;var b=el("button","pv"+(sel?" sel":"")+(on?" on":""),"<b>"+esc(q.label)+"</b><span>"+esc(on?T.connOn:(T.provNote[id]||""))+"</span>"+(sel&&on?'<i class="ck" aria-hidden="true"><svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></i>':""));b.type="button";b.setAttribute("aria-pressed",sel);if(on)b.title=q.label+" · "+T.connOn;
   b.onclick=function(){if(id!=S.provider)save({provider:id})};g.appendChild(b)});
- var gpt=k=="chatgpt";
+ var gpt=k=="chatgpt",cc=k=="claudecode";
  $("cDot").className="pdot"+(connected(p)?" ok":"");document.querySelector(".conn").classList.toggle("ok",linked(k,p));
  if(gpt)$("cTxt").textContent=p.signed_in?fmt(T.gptAs,p.email||"ChatGPT"):T.gptInfo;
+ else if(cc)$("cTxt").textContent=p.cc_path?fmt(T.ccFound,p.cc_path):T.ccMissing;
  else $("cTxt").textContent=!p.needs_key?T.cOkLocal:(p.has_key?fmt(T.cOk,p.key_hint||"…"):T.cNo);
  $("cDot").hidden=gpt&&!p.signed_in;
  $("bClear").textContent=gpt?T.logout:T.clear;
  $("bClear").hidden=gpt?!p.signed_in:!(p.needs_key&&p.has_key);
  $("bUsage").hidden=!(gpt&&p.signed_in);$("bUsage").textContent=T.usage;
- var info=gpt&&p.signed_in&&!p.plan?T.gptNoPlan:(!p.needs_key&&!gpt?fmt(T.localInfo,p.label):"");
+ var info=cc?T.ccInfo:gpt&&p.signed_in&&!p.plan?T.gptNoPlan:(!p.needs_key&&!gpt?fmt(T.localInfo,p.label):"");
  $("cInfo").hidden=!info;$("cInfo").textContent=info;$("cErr").hidden=true;
  $("orBox").hidden=!(k=="openrouter"||(gpt&&(!p.signed_in||!p.plan)));
  $("bLogin").textContent=gpt?T.gptBtn:T.login;$("bLogin").className="btn "+(gpt?"gpt":"pri");
  $("bForget").hidden=!(gpt&&!p.signed_in&&p.known);
  $("keyBox").hidden=!p.needs_key;$("key").value="";
  $("bKeyPage").hidden=!p.key_page;$("bKeyPage").textContent=T.keyPage;
- $("baseBox").hidden=!(k=="custom"||k=="ollama"||k=="lmstudio");$("base").value=p.base||"";$("base").placeholder=p.default_base||"https://…/v1";$("baseHint").textContent=p.default_base?fmt(T.baseHint,p.default_base):"";
- $("model").value=p.model||"";$("model").placeholder=p.default_model||"";$("modelHint").textContent=p.default_model?fmt(T.modelHint,p.default_model):"";
+ $("baseBox").hidden=!(cc||k=="custom"||k=="ollama"||k=="lmstudio");$("base").value=p.base||"";$("base").placeholder=cc?"claude":(p.default_base||"https://…/v1");$("baseHint").textContent=cc?T.ccPathHint:(p.default_base?fmt(T.baseHint,p.default_base):"");
+ $("lBase").textContent=cc?T.ccPath:T.lBase;$("bCcSetup").hidden=!cc;$("bCcSetup").textContent=T.ccSetup;
+ $("model").value=p.model||"";$("model").placeholder=cc?T.ccModel:(p.default_model||"");$("modelHint").textContent=p.default_model?fmt(T.modelHint,p.default_model):"";
  $("model").closest(".fld").hidden=gpt&&!(p.signed_in&&p.plan);
  var kh=$("kHint");if(gpt&&p.signed_in){kh.className="hint plan";kh.textContent=T.planHint;kh.tabIndex=0}else{kh.className="hint";kh.textContent=T.kHint;kh.tabIndex=-1}
  $("effBox").hidden=p.kind!="anthropic";
@@ -7441,6 +7985,7 @@ $("bClear").onclick=function(){if(S.provider=="chatgpt"){send({type:"logout"});s
 $("bUsage").onclick=function(){send({type:"open_usage"})};
 $("kHint").onclick=function(){if(this.classList.contains("plan"))send({type:"open_usage"})};
 $("bKeyPage").onclick=function(e){e.preventDefault();send({type:"open_key_page",provider:S.provider})};
+$("bCcSetup").onclick=function(e){e.preventDefault();send({type:"open_key_page",provider:"claudecode"})};
 $("base").onchange=function(){save({base:$("base").value})};
 $("model").onchange=function(){save({model:$("model").value})};
 $("bModels").onclick=function(){$("cErr").hidden=true;send({type:"models"});setBusy(true)};
