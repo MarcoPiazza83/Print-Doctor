@@ -2,18 +2,32 @@
 
 AI print troubleshooting for OrcaSlicer.
 
-Print Doctor is a plugin for OrcaSlicer 2.5.1 or newer. It adds a chat panel: you describe a print problem (stringing, warping, supports that will not come off, a rough top surface...) or attach a photo, the AI reads your current Orca settings and proposes changes to the process and filament presets. Nothing changes until you press Apply, and every applied change can be undone.
+Print Doctor is a plugin for OrcaSlicer 2.5.1 or newer. It adds a chat panel: you describe a print problem (stringing, warping, supports that will not come off, a rough top surface...) or attach a photo or a sliced file, the AI reads your current Orca settings and the model on the plate, and proposes changes to the process and filament presets. Nothing changes until you press Apply, and every applied change can be undone.
 
 > **Status: beta.** The code is covered by automated tests that run outside OrcaSlicer. Testing inside OrcaSlicer is still in progress, so expect rough edges.
 
-*In italiano: Print Doctor è un plugin per OrcaSlicer con una chat. Descrivi il difetto di stampa, l'IA legge i parametri di Orca e propone le modifiche, che applichi con un clic e puoi annullare. L'interfaccia è in italiano e in inglese.*
+*In italiano: Print Doctor è un plugin per OrcaSlicer con una chat. Descrivi il difetto di stampa o allega una foto o il G-code; l'IA legge i parametri di Orca e il modello sul piatto e propone le modifiche, che applichi con un clic e puoi annullare. L'interfaccia è in 23 lingue, italiano compreso, e segue la lingua scelta in OrcaSlicer.*
+
+## What it can do
+
+- **Chat with attachments:** photos of the print, and sliced files (`.gcode`, `.bgcode`, `.gcode.3mf`/`.3mf`). From a sliced file the AI reads print time and filament, slicer warnings, the settings actually used, per-layer times and flow per feature.
+- **Looks at your model:** cross-sections at any height (hole diameters, thinnest walls), overhang and bridge areas, plate contact area, mesh problems (open edges, flipped normals, floating objects). Object sizes account for scale, rotation and mirror.
+- **Checks your presets:** what differs from the stock preset and what is still unsaved, plate type against the filament's plate temperatures, nozzle against the profile, layer height and line widths against the nozzle.
+- **Calibration helper:** tells you which Orca calibration test to run, how to read it, and turns your reading into the value to enter.
+- **Figures and 3D view:** the AI can draw figures in the chat (sections, overhangs, layer times, flow) and open its own 3D window, where it can ask you to click the spot you mean, or take a picture of the model to look at it. Orca's own 3D view is never touched.
+- **Proposals you control:** every change is shown with old value, new value and reason; nothing changes until you press Apply, every applied change can be undone, and the chat keeps a history of what was proposed, applied or blocked.
+- **Language:** the panel is in 23 languages and follows the language chosen in OrcaSlicer's preferences. You can write to the AI in any language.
 
 ## Install
 
-1. Download `print_doctor.py`.
+Requirements: OrcaSlicer 2.5.1 or newer. Nothing else to install.
+
+1. Download [`print_doctor.py`](print_doctor.py) (on the file page, use the download button).
 2. In OrcaSlicer: **File → Plugins → Install local plugin**, pick the file, activate it and accept the permissions (network and threads).
 3. Select **Print Doctor** in the Plugins window and press **Run**: the panel opens on the right.
 4. Open the settings (gear icon) and connect an AI service.
+
+To update, install the new `print_doctor.py` the same way. Settings and keys live in the plugin's storage folder, not in the file; if they are gone after an update, connect the AI service again.
 
 ## AI services
 
@@ -26,6 +40,10 @@ Print Doctor is a plugin for OrcaSlicer 2.5.1 or newer. It adds a chat panel: yo
 | Any OpenAI-compatible server | Base URL and key |
 
 Requests go straight from your computer to the service you choose. Keys and tokens are stored only on your computer, in the plugin's settings file.
+
+## Privacy
+
+There is no Print Doctor server. What the AI service receives is what it needs to answer: your messages, the photos and sliced files you attach, the settings it reads, measurements of the objects on the plate and, when it asks for one, a picture of the plugin's 3D window. That service's own privacy terms apply. With Ollama or LM Studio everything stays on your computer.
 
 ## Safety rules
 

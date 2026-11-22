@@ -6,7 +6,7 @@
 # name = "Print Doctor"
 # description = "Chatta con un'IA che capisce i problemi di stampa e modifica i parametri di Orca (supporti, larghezze di linea, velocita, ritrazione, temperature). Funziona con il tuo abbonamento ChatGPT, OpenRouter, Anthropic, OpenAI, Gemini, Ollama e LM Studio. Gratuito: se ti e utile, offrimi un caffe su buymeacoffee.com/Marco.Piazza"
 # author = "Marco Piazza"
-# version = "0.4.0"
+# version = "0.5.0"
 # ///
 #
 # Plugin gratuito e open source: licenza GNU AGPL v3 (vedi LICENSE). Solo libreria standard di Python.
@@ -51,7 +51,7 @@ import webbrowser
 
 import orca
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 TITLE = "Print Doctor"
 PANEL_TITLE = "Print Doctor"      # titolo del pannello
 PANEL_WIDTH = 330
@@ -179,20 +179,6 @@ def short(v):
 
 def b64url(raw):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-
-
-def orca_conf_language():
-    """Lingua dell'interfaccia di Orca ("app" -> "language" in OrcaSlicer.conf, JSON); vuota se non si legge.
-    Orca 2.5.1 non la espone ai plugin, e la lingua della pagina e quella del sistema, non quella di Orca."""
-    base = data_dir()
-    if not base:
-        return ""
-    try:
-        with open(os.path.join(base, "OrcaSlicer.conf"), "r", encoding="utf-8") as f:
-            conf = json.load(f)
-        return str((conf.get("app") or {}).get("language") or "")
-    except Exception:
-        return ""
 
 
 def data_dir():
@@ -5673,7 +5659,9 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
                 except Exception:
                     lang = ""
             if not lang:
-                lang = orca_conf_language()             # lingua scelta nelle preferenze di Orca
+                # Orca 2.5.1 non espone la lingua ai plugin e vieta di leggere OrcaSlicer.conf; le sue WebView
+                # pero hanno nello user agent "BBL-Language/<codice>" con la lingua scelta nelle preferenze.
+                lang = str(data.get("orca_lang") or "")
             if not lang:
                 lang = str(data.get("lang") or "")      # lingua della pagina (sistema)
             self.lang = ui_lang(lang)
@@ -7471,7 +7459,8 @@ function helpMsg(text,subject,body,email){var a=el("div","a rise",md(text));var 
  w.appendChild(b);a.appendChild(w);place(a)}
 $("bDiagCopy").onclick=function(){var t=$("diag").textContent;var a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();try{document.execCommand("copy")}catch(e){}a.remove();if(navigator.clipboard)navigator.clipboard.writeText(t).catch(function(){});toast(T.copied)};
 if(window.orca&&orca.onMessage)orca.onMessage(onMsg);
-ui();send({type:"ready",lang:navigator.language||""});
+function orcaLang(){var u=navigator.userAgent||"",i=u.indexOf("BBL-Language/");return i<0?"":u.slice(i+13).split(/[ ;)]/)[0]}
+ui();send({type:"ready",lang:navigator.language||"",orca_lang:orcaLang()});
 </script></body></html>"""
 
 
