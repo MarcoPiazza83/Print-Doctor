@@ -7,8 +7,9 @@ description: Goal skill for stronger, tougher and watertight parts - wall loops 
 A printed part is strong along its lines and weak between layers. Order: orientation and material (the user decides), then walls, then layer bonding (temperature, cooling, flow), then infill. A part that split while printing is a defect: defect-layer-adhesion.
 
 ## What to ask first
+- Tools first: analyze_model and open_3d_view show how the part lies on the plate; ask only how the load is applied.
 - How does it fail or what must it resist: snapping along layer lines, bending, crushing, impact, a screw pulling out, leaking?
-- Direction of the load compared with the layers (ask for a photo of the part as it lies on the plate).
+- Direction of the load compared with the layers (the orientation on the plate is known from analyze_model / open_3d_view; ask the user how the load is applied).
 - Material, printer, nozzle, enclosure; does the part work in heat or outdoors?
 - Current `wall_loops`, `sparse_infill_density`, `layer_height`, temperature and fan (read the presets).
 - Watertight: just holding water, or pressure? Never promise food safety.

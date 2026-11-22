@@ -6,8 +6,8 @@ description: Start here for any print problem: maps what the user sees (strings,
 
 ## Method (follow in this order)
 1. **Pin down the symptom.** Ask for a photo if none was given. Locate the defect: first layer, walls, top surface, under overhangs, around supports, at layer changes, only on one object, only in one part of the plate.
-2. **Ask what changed.** New spool or brand, filament left out for days, new or edited profile, new plate, different printer mode (silent/sport), hardware work. A defect that appeared suddenly on a profile that used to work points to hardware or material, not to the profile.
-3. **Read the current settings** (process + filament) before proposing anything, and identify printer, nozzle diameter, plate type and material.
+2. **Ask what changed.** New spool or brand, filament left out for days, new or edited profile, new plate, different printer mode (silent/sport), hardware work. preset_changes shows what differs from the stock profile and the unsaved edits, so ask only about what it cannot show. A defect that appeared suddenly on a profile that used to work points to hardware or material, not to the profile.
+3. **Read the current settings** (process + filament) before proposing anything, and identify printer, nozzle diameter, plate type and material. Run plate_check; use analyze_model when the shape may be the cause, and the analysis of an attached G-code for layer times and flow.
 4. **Rule out hardware and material first** when the symptom points there (see "Hardware first" below). Explain these checks to the user; never try to compensate a mechanical fault with parameters.
 5. **Calibrate before tuning.** If flow, pressure advance, temperature or max volumetric speed were never calibrated for this filament, recommend the matching calibration (see calibration-guide) instead of guessing values.
 6. **Change few settings, in small steps**, most effective and least risky first. Say what each change costs (time, strength, surface). One defect per round; ask the user to reprint (ideally a small test) before the next round.

@@ -22,6 +22,7 @@ description: Drooping, sagging or curling overhangs and bridges (unsupported wal
 8. Hardware: part cooling fan weak, dirty or obstructed duct, wet filament.
 
 ## Questions worth asking (only when the answer changes the fix)
+- Tools first: analyze_model gives overhang areas by angle and the flat bridges with their height; show_figure (overhangs) shows them to the user.
 - Material and printer (enclosed or open)? Decides how much fan and whether to open the door.
 - Overhang or bridge, and roughly how long is the span / what angle? Long spans and angles below ~45° go to supports first.
 - Sagging lines or gaps between lines? Opposite bridge-flow directions.

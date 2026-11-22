@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and help
+    url: https://github.com/MarcoPiazza83/Print-Doctor/discussions
+    about: How do I connect a service, what does a setting mean, is this a good idea... Ask here.
+  - name: No GitHub account? Email
+    url: https://meshdab.com/
+    about: Write to info@meshdab.com and attach print_doctor_report.txt (from "Report a problem" in the panel).

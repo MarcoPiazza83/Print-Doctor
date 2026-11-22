@@ -20,6 +20,7 @@ description: Support problems - hard to remove or fused supports, supports falli
 6. Mismatched or wet support filament (PVA, Support for PA/PET), or supports left too long on hygroscopic parts.
 
 ## Questions worth asking (only when the answer changes the fix)
+- Tools first: analyze_model gives overhang areas by angle, flat bridges and contact area; show_figure (overhangs) or open_3d_view shows them to the user. Ask only what the tools cannot tell.
 - Same filament for support, or a dedicated/soluble support filament (which one)? Decides whether top Z distance 0 is allowed.
 - Problem is removal, surface quality, falling, or amount? Pick the matching table below.
 - Normal or tree support (separate keys)?

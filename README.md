@@ -50,7 +50,17 @@ python3 incorpora_skill.py
 
 You can also drop your own `.md` skills in the plugin's `skills` folder (its path is shown in the settings); a skill with the same name replaces the embedded one.
 
-## Support
+## Problems, questions, ideas
+
+- **Something does not work?** Press **Report a problem** at the bottom of the panel. Your browser opens a GitHub issue with the version, OrcaSlicer version and system already filled in, and the folder with `print_doctor_report.txt` opens next to it: drag that file into the issue. The file holds the plugin log with keys, tokens, email addresses and your user folder removed. Read it before you attach it if you like.
+- **Questions and help:** [Discussions](https://github.com/MarcoPiazza83/Print-Doctor/discussions).
+- **Ideas:** press **Suggest an idea** at the bottom of the panel, or [open a feature request](https://github.com/MarcoPiazza83/Print-Doctor/issues/new?template=feature.yml).
+- **No GitHub account?** After either button, the chat shows **Write an email**: it opens your mail app with a message to info@meshdab.com already filled in. For a problem, attach the same file.
+- **Security problems:** see [SECURITY.md](SECURITY.md), do not open a public issue.
+
+English or Italian, both are fine.
+
+## Support the project
 
 Print Doctor is free. If it helps you, you can [buy me a coffee](https://buymeacoffee.com/Marco.Piazza).
 

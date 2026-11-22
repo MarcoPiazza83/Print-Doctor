@@ -7,7 +7,7 @@ description: Which OrcaSlicer calibration test (menu Calibration) fixes which de
 ## Rules for the AI
 - The user runs every test from the **Calibration** menu in the top bar; each test opens a new project. Afterwards tell the user to start a new project to leave calibration mode.
 - Calibrate with the same printer, filament and process presets that will be used. The flow ratio test starts from the value already in the filament preset.
-- Choose the test, explain how to read it, do the arithmetic, propose the change. Printer/firmware results (input shaping, jerk, resonance avoidance) are entered by the user by hand.
+- Choose the test, explain how to read it, compute the result with the calibration_calc tool (never by hand), propose the change. Printer/firmware results (input shaping, jerk, resonance avoidance) are entered by the user by hand.
 - Rule out hardware first, or the numbers are meaningless: dry filament, clean nozzle without partial clog, clean extruder gears, clean plate, correct first layer.
 - Bambu printers: when sending an Orca test, untick the flow (dynamics) calibration option in the send dialog, otherwise the printer measures its own value and the test is not what was printed.
 

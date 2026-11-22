@@ -1,0 +1,61 @@
+name: Bug report
+description: Something in Print Doctor does not work as expected
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. You can write in English or Italian.
+        Quickest way: press **Report a problem** at the bottom of the Print Doctor panel. It fills in the fields below and creates a report file for you to attach.
+        **Never paste API keys, tokens or passwords here.**
+  - type: input
+    id: version
+    attributes:
+      label: Print Doctor version
+      placeholder: "0.4.0"
+    validations:
+      required: true
+  - type: input
+    id: orca
+    attributes:
+      label: OrcaSlicer version
+      placeholder: "2.5.1"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15.2 / Windows 11 / Ubuntu 24.04"
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: AI service and model
+      placeholder: "ChatGPT / OpenRouter · anthropic/claude-opus-5.5 / Ollama · llama3"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you asked the AI, what it answered or did, and any error message.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the panel
+        2. Ask "..."
+        3. Press Apply
+  - type: textarea
+    id: logs
+    attributes:
+      label: Report file and screenshots
+      description: Drag the file print_doctor_report.txt here (the panel opens its folder for you), plus any screenshot of the panel or the print.

@@ -5,7 +5,7 @@ description: Parts out of size: holes too small, pegs or screws that do not fit,
 # Dimensional accuracy
 
 ## How to recognize it
-Ask for caliper measurements versus the designed values before changing anything.
+Ask for caliper measurements of the print before changing anything; get the designed values with measure_section instead of asking for them.
 - **Holes undersized** (most common): screws, pins, bearings or magnets do not go in; outer size is close to nominal.
 - **Outer size off by a constant amount** (e.g. always +0.15 mm on any size): line width / flow / wall placement.
 - **Error growing with part size** (e.g. -0.1 mm at 20 mm, -0.5 mm at 100 mm): thermal shrinkage of the material.
@@ -24,6 +24,7 @@ Ask for caliper measurements versus the designed values before changing anything
 8. Measuring error: measuring near the first layer, at corners (pressure advance effects), on a warm part, or squeezing the caliper.
 
 ## Questions worth asking (only when the answer changes the fix)
+- Tools first: measure_section gives the designed hole diameters and wall thickness at a height (show_figure section to show them); ask the user only for the caliper readings of the print.
 - What is too big or small: holes, outer size, bottom edge, height? By how much (mm)?
 - Is the error the same on a small and a large part, or proportional to size?
 - Which material and plate? Elephant foot compensation differs by plate type.

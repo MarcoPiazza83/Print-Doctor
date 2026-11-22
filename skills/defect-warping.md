@@ -22,6 +22,7 @@ description: Warping and lifting of the part: corners or edges curling up off th
 9. High speed: more stress in the part and more shear from the nozzle.
 
 ## Questions worth asking (only when the answer changes the fix)
+- Tools first: analyze_model gives the contact area and the height/base ratio (small footprints and tall-thin parts need a brim or a different orientation).
 - Which plate is physically on the printer, which plate type is selected in Orca, glue or not?
 - Open-frame or enclosed printer, doors/lid closed, room temperature, draft sources nearby?
 - Does it lift in the first few layers (grip) or after several mm (shrink stress, environment)?

@@ -24,6 +24,7 @@ description: Covers global or local under-extrusion, over-extrusion, inconsisten
 8. Gloss: big speed (flow) differences on the same outer surface.
 
 ## Questions worth asking (only when the answer changes the fix)
+- Tools first: with an attached G-code, its flow analysis shows which features run at the filament's max volumetric speed; show_figure (flow) shows it.
 - Sudden (hardware) or always with this filament (profile)?
 - Everywhere, only corners, only infill, only fast features?
 - Vendor filament on its stock profile or third-party? Flow / pressure advance ever calibrated for this spool?

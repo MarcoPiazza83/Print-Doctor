@@ -1,0 +1,18 @@
+name: Feature request
+description: An idea to make Print Doctor better
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: You can write in English or Italian.
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like Print Doctor to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why? Which print problem would it help with?

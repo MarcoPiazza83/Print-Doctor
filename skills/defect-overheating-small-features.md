@@ -25,6 +25,7 @@ Missing features / thin-wall gaps:
 4. Nozzle too large for the detail (hardware).
 
 ## Questions worth asking (only when the answer changes the fix)
+- Tools first: with an attached G-code, its analysis lists the layers at or below slow_down_layer_time; show_figure (layer_times) shows where they are.
 - One small object alone on the plate, or many? (Printing several copies is the simplest overheating fix.)
 - Is the feature missing in the slicer Preview, or only on the print?
 - Which wall generator is active (Arachne or Classic)?
