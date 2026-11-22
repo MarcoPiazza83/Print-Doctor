@@ -181,6 +181,20 @@ def b64url(raw):
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def orca_conf_language():
+    """Lingua dell'interfaccia di Orca ("app" -> "language" in OrcaSlicer.conf, JSON); vuota se non si legge.
+    Orca 2.5.1 non la espone ai plugin, e la lingua della pagina e quella del sistema, non quella di Orca."""
+    base = data_dir()
+    if not base:
+        return ""
+    try:
+        with open(os.path.join(base, "OrcaSlicer.conf"), "r", encoding="utf-8") as f:
+            conf = json.load(f)
+        return str((conf.get("app") or {}).get("language") or "")
+    except Exception:
+        return ""
+
+
 def data_dir():
     """.../OrcaSlicer/orca_plugins/<plugin>/<file>.py  ->  .../OrcaSlicer"""
     p = os.path.abspath(__file__)
@@ -5658,6 +5672,8 @@ class Assistant(orca.script.ScriptPluginCapabilityBase):
                     lang = str(fn() or "")
                 except Exception:
                     lang = ""
+            if not lang:
+                lang = orca_conf_language()             # lingua scelta nelle preferenze di Orca
             if not lang:
                 lang = str(data.get("lang") or "")      # lingua della pagina (sistema)
             self.lang = ui_lang(lang)
