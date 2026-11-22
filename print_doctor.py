@@ -6,7 +6,7 @@
 # name = "Print Doctor"
 # description = "Chat with an AI that understands print problems and changes Orca settings (supports, line widths, speeds, retraction, temperatures). Works with your ChatGPT plan, your Claude plan (through Claude Code), OpenRouter, Anthropic, OpenAI, Gemini, Ollama and LM Studio. Panel in 23 languages. Free: if it helps you, buy me a coffee at buymeacoffee.com/Marco.Piazza"
 # author = "Marco Piazza"
-# version = "0.5.0"
+# version = "0.6.0"
 # ///
 #
 # Plugin gratuito e open source: licenza GNU AGPL v3 (vedi LICENSE). Solo libreria standard di Python.
@@ -61,7 +61,7 @@ except ImportError:
 
 import orca
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 TITLE = "Print Doctor"
 PANEL_TITLE = "Print Doctor"      # titolo del pannello
 PANEL_WIDTH = 330
