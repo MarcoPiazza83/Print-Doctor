@@ -93,11 +93,14 @@ In the terminal type:
 claude
 ```
 
-and press Enter. The first time, Claude Code asks you to sign in:
+and press Enter. On Windows, if the terminal shows `C:\Windows\System32`, type `cd ~` and press Enter first, so Claude Code starts in your user folder.
 
-1. Choose to sign in with your **Claude account** (subscription), not with an API key.
-2. Your browser opens: sign in with the same account you use on claude.ai or in Claude Desktop, and allow access.
-3. Back in the terminal, Claude Code may ask a few first-run questions (theme, trusting the folder): the defaults are fine.
+The first time, Claude Code walks you through a few screens. **Keep going until you have signed in in the browser: if you close the terminal before that, you are not signed in and Print Doctor says so.**
+
+1. **Choose the text style** (theme): just press Enter.
+2. **Sign in:** with the arrow keys choose your **Claude account with subscription**, not the Anthropic Console / API key option, and press Enter.
+3. Your browser opens: sign in with the same account you use on claude.ai or in Claude Desktop, and press **Authorize**. If the browser shows a code, copy it, paste it in the terminal and press Enter.
+4. Any other questions (for example whether you trust the folder): press Enter to accept the proposed choice.
 
 When you see Claude Code's prompt, you are signed in. Type `/exit` and press Enter (or just close the terminal). You never need to open the terminal again for Print Doctor.
 
