@@ -68,7 +68,7 @@ PANEL_WIDTH = 330
 TAB_TITLE = "Print Doctor"        # linguetta sulla destra quando il pannello e nascosto
 TAB_WIDTH = 44
 DONATE_URL = "https://buymeacoffee.com/Marco.Piazza"
-MESHDAB_URL = "https://meshdab.com/"
+MESHDAB_URL = "https://meshdab.com/?utm_source=print-doctor&utm_medium=plugin&utm_campaign=preview"   # UTM: in Analytics si vede quante visite arrivano dal pannello
 ISSUES_URL = "https://github.com/MarcoPiazza83/Print-Doctor/issues/new"   # "Segnala un problema"
 SKILLS_SHARE_URL = "https://github.com/MarcoPiazza83/Print-Doctor/discussions"   # "Condividi le tue skill"
 SUPPORT_EMAIL = "info@meshdab.com"                                         # per chi non ha un account GitHub
@@ -3690,6 +3690,9 @@ def safety_error(ptype, key, value, vals, base=None):
             cur = first_number(vals, ptype, key, agg=max)
             start = start_number(base, vals, ptype, key, agg=max)      # +10 C dal valore di partenza, non a ogni richiesta
             cap = min(BED_TEMP_MAX, max(cur, start + 10) if cur is not None else BED_TEMP_MAX)
+            if cur and 0 in ns:                          # 0 = piatto non supportato (o primo strato freddo): vedi check_plate
+                return ("UNSAFE: a plate temperature of 0 means this filament does not support the plate (or, for the "
+                        "first layer, a cold plate). Keep a real temperature; the user can set 0 by hand if they really want it.")
             if any(t < 0 or t > cap for t in ns):
                 return ("UNSAFE: bed temperature must stay between 0 and %g C (at most +10 C over the original value, "
                         "not per request)." % cap)

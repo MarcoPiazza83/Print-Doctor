@@ -1,4 +1,4 @@
-# Print Doctor
+# Print Doctor by [MeshDab](https://meshdab.com/?utm_source=github&utm_medium=readme&utm_campaign=print-doctor)
 
 AI print troubleshooting for OrcaSlicer.
 
@@ -76,9 +76,11 @@ The plugin enforces these in code, twice: when the AI proposes a change and agai
 - Printer settings are never changed.
 - Custom G-code, post-processing scripts, material data, temperature ranges and chamber heating are never changed.
 - Only settings on an explicit allow-list can be changed, each with a type and a range. Anything else is explained to you as a manual step.
-- Nozzle temperature stays inside the filament's own range; plate temperature can go up by at most 10 °C; flow ratio stays between 0.8 and 1.2; max volumetric speed can go up by at most 10%; speeds, accelerations and jerk stay within the printer's machine limits.
+- Nozzle temperature stays inside the filament's own range; plate temperature can go up by at most 10 °C and is never set to 0 (in Orca, 0 means the filament does not support that plate); flow ratio stays between 0.8 and 1.2; max volumetric speed can go up by at most 10%; speeds, accelerations and jerk stay within the printer's machine limits.
 
 No software check replaces your own judgement: look at what a proposal changes before you apply it.
+
+These rules are covered by tests in `tests/`, which run without OrcaSlicer: `python3 -m unittest discover tests`.
 
 ## Skills
 
