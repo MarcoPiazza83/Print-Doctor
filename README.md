@@ -6,8 +6,6 @@ Print Doctor is a plugin for OrcaSlicer 2.5.1 or newer. It adds a chat panel: yo
 
 > **Status: beta.** The code is covered by automated tests that run outside OrcaSlicer. Testing inside OrcaSlicer is still in progress, so expect rough edges.
 
-*In italiano: Print Doctor è un plugin per OrcaSlicer con una chat. Descrivi il difetto di stampa o allega una foto o il G-code; l'IA legge i parametri di Orca e il modello sul piatto e propone le modifiche, che applichi con un clic e puoi annullare. Funziona con il tuo abbonamento ChatGPT o Claude (tramite Claude Code), con una chiave API (Gemini ne ha una gratuita) o con modelli locali. L'interfaccia è in 23 lingue, italiano compreso, e segue la lingua scelta in OrcaSlicer.*
-
 ## What it can do
 
 - **Chat with attachments:** photos of the print, and sliced files (`.gcode`, `.bgcode`, `.gcode.3mf`/`.3mf`). From a sliced file the AI reads print time and filament, slicer warnings, the settings actually used, per-layer times and flow per feature.
