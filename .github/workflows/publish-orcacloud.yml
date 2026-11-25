@@ -1,0 +1,91 @@
+name: Publish to OrcaCloud
+
+# Ogni release GitHub pubblicata (anche pre-release) carica print_doctor.py su OrcaCloud.
+# Il tag (es. v0.6.2) diventa la versione, le note della release il changelog.
+on:
+  release:
+    types: [published]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  # OrcaCloud vuole il suffisso del sistema operativo nel nome del file: "_any" = tutti.
+  PLUGIN_FILES: "print_doctor_any.py"
+  # "Release workflow URL for this plugin" (Edit plugin → GitHub publishing).
+  PUBLISH_URL: "https://api.orcaslicer.com/api/v1/plugin-publish/plugins/3bf80bcb-05f2-40f7-99e2-4539bd3a297e/releases"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Si pubblica solo il file del tag, e solo se passa gli stessi controlli di tests.yml.
+      - name: Check before publishing
+        run: |
+          set -euo pipefail
+          case "$PUBLISH_URL" in
+            *YOUR-PLUGIN-ID*|"") echo "PUBLISH_URL is still the placeholder: set the plugin's release workflow URL"; exit 1 ;;
+          esac
+          # versione dell'intestazione PEP 723 (il blocco "# /// script") e costante VERSION, lette da Python
+          python - "${GITHUB_REF_NAME#v}" <<'PY'
+          import ast, re, sys, tomllib
+          tag = sys.argv[1]
+          src = open("print_doctor.py", encoding="utf-8").read()
+          block = re.search(r"^# /// script\n((?:#.*\n)*?)# ///$", src, re.M).group(1)
+          meta = tomllib.loads("\n".join(l[2:] if l.startswith("# ") else l[1:] for l in block.splitlines()))
+          header = meta["tool"]["orcaslicer"]["plugin"]["version"]
+          const = next(n.value.value for n in ast.parse(src).body if isinstance(n, ast.Assign)
+                       and any(getattr(t, "id", None) == "VERSION" for t in n.targets))
+          print("tag %s, header %s, VERSION %s" % (tag, header, const))
+          if not (tag == header == const):
+              sys.exit("The release tag, the plugin header version and VERSION must be the same")
+          PY
+          python -m py_compile print_doctor.py
+          python -m unittest discover tests
+          python incorpora_skill.py
+          git diff --exit-code -- print_doctor.py
+
+      - name: Prepare plugin file
+        run: cp print_doctor.py print_doctor_any.py
+
+      - name: Publish release to OrcaCloud
+        env:
+          RELEASE_BODY: ${{ github.event.release.body }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          changelog="$(printf '%s' "${RELEASE_BODY:-}" | head -c 4000)"
+          metadata="$(jq -n --arg v "$version" --arg c "$changelog" '{version: $v, changelog: $c}')"
+
+          token="$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=orcacloud" | jq -r '.value')"
+
+          args=()
+          for pattern in $PLUGIN_FILES; do
+            for f in $pattern; do
+              [ -f "$f" ] && args+=(-F "files=@$f")
+            done
+          done
+          if [ ${#args[@]} -eq 0 ]; then
+            echo "No plugin files matched"
+            exit 1
+          fi
+
+          status="$(curl -sS -o response.json -w '%{http_code}' \
+            -H "Authorization: Bearer $token" \
+            --form-string "metadata=$metadata" \
+            "${args[@]}" \
+            "$PUBLISH_URL")"
+
+          # Non stampare response.json: contiene i risultati dei controlli, visibili solo al creatore.
+          echo "status: $status"
+          echo "version: $(jq -r '.version // empty' response.json 2>/dev/null || true)"
+          echo "level: $(jq -r '.security.level // empty' response.json 2>/dev/null || true)"
+          [ "$status" = "201" ] || exit 1

@@ -13,7 +13,7 @@ Print Doctor is a plugin for OrcaSlicer 2.5.1 or newer. It adds a chat panel: yo
 - **Checks your presets:** what differs from the stock preset and what is still unsaved, plate type against the filament's plate temperatures, nozzle against the profile, layer height and line widths against the nozzle.
 - **Calibration helper:** tells you which Orca calibration test to run, how to read it, and turns your reading into the value to enter.
 - **Figures and 3D view:** the AI can draw figures in the chat (sections, overhangs, layer times, flow) and open its own 3D window, where it can ask you to click the spot you mean, or take a picture of the model to look at it. Orca's own 3D view is never touched.
-- **Proposals you control:** every change is shown with old value, new value and reason; nothing changes until you press Apply, every applied change can be undone, and the chat keeps a history of what was proposed, applied or blocked.
+- **Proposals you control:** every change is shown with old value, new value and reason; nothing changes until you press Apply (unless you turn on auto-apply, which is off every time OrcaSlicer starts), every applied change can be undone, and the chat keeps a history of what was proposed, applied or blocked.
 - **Language:** the panel is in 23 languages and follows the language chosen in OrcaSlicer's preferences. You can write to the AI in any language.
 
 ## Install
@@ -21,7 +21,7 @@ Print Doctor is a plugin for OrcaSlicer 2.5.1 or newer. It adds a chat panel: yo
 Requirements: OrcaSlicer 2.5.1 or newer. Nothing else to install.
 
 1. Download `print_doctor.py` from the [Releases page](https://github.com/MarcoPiazza83/Print-Doctor/releases) (under **Assets** of the newest release).
-2. In OrcaSlicer: **File → Plugins → Install local plugin**, pick the file, activate it and accept the permissions (network and threads).
+2. In OrcaSlicer: **File → Plugins → Install local plugin**, pick the file, activate it and accept the permission it asks for (threads). The first time you use an AI service, OrcaSlicer asks whether Print Doctor may connect to it: answer **Yes**. Only the service you choose is asked for, so with Ollama or LM Studio nothing goes online.
 3. Select **Print Doctor** in the Plugins window and press **Run**: the panel opens on the right.
 4. Open the settings (gear icon) and connect an AI service.
 
@@ -129,7 +129,7 @@ Print Doctor starts your own, unmodified Claude Code and gives it Print Doctor's
 ### Good to know
 
 - Usage counts toward your Claude plan's limits, like using Claude Code yourself, and is shared with your chats on claude.ai and Claude Desktop. Anthropic's terms apply.
-- If the environment variable `ANTHROPIC_API_KEY` is set on your computer, Claude Code uses that key instead of your plan, and the API bills it.
+- Print Doctor starts Claude Code without the `ANTHROPIC_*` environment variables (for example `ANTHROPIC_API_KEY`), so it uses your plan even if an API key is set on your computer.
 - Error *Claude Code is not signed in*: repeat step 4.
 - Error *usage limit reached*: your plan's limit for now is used up; it resets after a few hours.
 - Something odd? In a terminal, `claude doctor` checks the installation without starting a chat.
@@ -138,7 +138,7 @@ Print Doctor starts your own, unmodified Claude Code and gives it Print Doctor's
 
 ## Privacy
 
-There is no Print Doctor server. What the AI service receives is what it needs to answer: your messages, the photos and sliced files you attach, the settings it reads, measurements of the objects on the plate and, when it asks for one, a picture of the plugin's 3D window. That service's own privacy terms apply. With Claude, requests go from Claude Code on your computer to Anthropic. With Ollama or LM Studio everything stays on your computer.
+There is no Print Doctor server. What the AI service receives is what it needs to answer: your messages, the photos and sliced files you attach, the settings it reads (never the print host address, API key or password of your printer), measurements of the objects on the plate and, when it asks for one, a picture of the plugin's 3D window. That service's own privacy terms apply. With Claude, requests go from Claude Code on your computer to Anthropic. With Ollama or LM Studio everything stays on your computer.
 
 ## Safety rules
 
@@ -147,9 +147,11 @@ The plugin enforces these in code, twice: when the AI proposes a change and agai
 - Printer settings are never changed.
 - Custom G-code, post-processing scripts, material data, temperature ranges and chamber heating are never changed.
 - Only settings on an explicit allow-list can be changed, each with a type and a range. Anything else is explained to you as a manual step.
-- Nozzle temperature stays inside the filament's own range; plate temperature can go up by at most 10 °C and is never set to 0 (in Orca, 0 means the filament does not support that plate); flow ratio stays between 0.8 and 1.2; max volumetric speed can go up by at most 10%; speeds, accelerations and jerk stay within the printer's machine limits.
+- Nozzle temperature stays inside the filament's own range; plate temperature can go up by at most 10 °C for each plate variant, is never set to 0 and never turned on for a plate the filament does not support (in Orca, 0 means the filament does not support that plate); flow ratio stays between 0.8 and 1.2; max volumetric speed can go up by at most 10%; speeds, accelerations and jerk stay within the printer's machine limits, on every axis and, with silent mode on, in silent mode too. A percentage (like `150%`) is checked on the value it is a percentage of, and the other changes in the same proposal count.
+- If a value needed for a check cannot be read (no machine limits, no temperature range, no nozzle diameter), the change is not proposed: you get it as a manual step.
+- A proposal applies only to the preset and filament slot it was made for, once; Undo restores only settings you have not changed again since, and is checked with the same rules.
 
-No software check replaces your own judgement: look at what a proposal changes before you apply it.
+No software check replaces your own judgement: look at what a proposal changes before you apply it. **Every change you apply is your own responsibility.**
 
 These rules are covered by tests in `tests/`, which run without OrcaSlicer: `python3 -m unittest discover tests`.
 
